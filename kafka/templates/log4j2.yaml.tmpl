@@ -1,0 +1,13 @@
+Configuration:
+  status: warn
+  name: KafkaLogConfig
+  appenders:
+    Console:
+      name: STDOUT
+      PatternLayout:
+        pattern: "[%d{ISO8601}] %p %m (%c)%n"
+  Loggers:
+    Root:
+      level: info
+      AppenderRef:
+        - ref: STDOUT

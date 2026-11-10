@@ -1,0 +1,28 @@
+services:
+  kafka:
+    image: ${KAFKA_IMAGE}
+    container_name: ${CONTAINER_NAME}
+    network_mode: host
+    restart: unless-stopped
+    cpus: "${CPU_LIMIT}"
+    mem_limit: ${MEMORY_LIMIT}
+    stop_grace_period: 120s
+    ulimits:
+      nofile:
+        soft: ${NOFILE_LIMIT}
+        hard: ${NOFILE_LIMIT}
+    environment:
+      KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS}
+      KAFKA_LOG4J_OPTS: -Dlog4j2.configurationFile=/etc/kafka/custom/log4j2.yaml
+    volumes:
+      - ./config:/etc/kafka/custom:ro
+      - ${HOST_DATA_DIR}:/var/lib/kafka/data
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - exec /opt/kafka/bin/kafka-server-start.sh /etc/kafka/custom/server.properties
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE}
+        max-file: "${LOG_MAX_FILE}"
+        compress: "true"

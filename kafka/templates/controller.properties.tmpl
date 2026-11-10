@@ -1,0 +1,8 @@
+process.roles=controller
+node.id={{NODE_ID}}
+controller.quorum.bootstrap.servers={{CONTROLLER_BOOTSTRAP_SERVERS}}
+controller.listener.names=CONTROLLER
+listeners=CONTROLLER://0.0.0.0:{{CONTROLLER_PORT}}
+listener.security.protocol.map=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT
+metadata.log.dir=/var/lib/kafka/data
+log.dirs=/var/lib/kafka/data

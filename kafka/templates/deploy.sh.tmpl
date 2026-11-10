@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Kafka {{NODE_ROLE}}-{{NODE_INDEX}} 节点管理脚本
+
+set -euo pipefail
+umask 077
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE=(docker compose)
+
+info() { printf '[INFO] %s\n' "$*"; }
+warn() { printf '[WARN] %s\n' "$*" >&2; }
+die() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
+
+load_env() {
+    [[ -f "$SCRIPT_DIR/.env" ]] || die "缺少 .env"
+    # shellcheck disable=SC1091
+    set -a; source "$SCRIPT_DIR/.env"; set +a
+}
+
+compose() {
+    "${COMPOSE[@]}" --project-name "$COMPOSE_PROJECT_NAME" \
+        --project-directory "$SCRIPT_DIR" --env-file "$SCRIPT_DIR/.env" \
+        -f "$SCRIPT_DIR/docker-compose.yml" "$@"
+}
+
+check_files() {
+    local file
+    for file in .env docker-compose.yml manifest.json checksums.sha256 config/server.properties config/log4j2.yaml; do
+        [[ -f "$SCRIPT_DIR/$file" ]] || die "缺少节点包文件: $file"
+    done
+    (cd "$SCRIPT_DIR" && sha256sum -c checksums.sha256 >/dev/null) || die "节点包文件摘要不匹配"
+}
+
+check_runtime() {
+    [[ $EUID -eq 0 ]] || die "部署目录位于 /root，必须使用 root 执行"
+    command -v docker >/dev/null 2>&1 || die "未安装 Docker；请先运行 docker/setup-docker.sh"
+    docker info >/dev/null 2>&1 || die "Docker daemon 不可用"
+    docker compose version >/dev/null 2>&1 || die "需要 Docker Compose V2"
+    compose config --quiet
+}
+
+check_host() {
+    [[ "$DEPLOY_DIR" == /root/deploy/kafka/* ]] || die "DEPLOY_DIR 不符合规划: $DEPLOY_DIR"
+    [[ "$HOST_DATA_DIR" == /data1/kafka/* ]] || die "HOST_DATA_DIR 不符合规划: $HOST_DATA_DIR"
+    [[ "$(pwd -P)" == "$DEPLOY_DIR" || "$SCRIPT_DIR" == "$DEPLOY_DIR" ]] || warn "节点包当前位于 $SCRIPT_DIR，正式部署路径应为 $DEPLOY_DIR"
+    mountpoint -q /data1 || die "/data1 不是独立挂载点"
+    local docker_root
+    docker_root="$(docker info 2>/dev/null | awk -F': ' '/Docker Root Dir/ {print $2; exit}')"
+    [[ "$docker_root" == "/data1/docker" ]] || die "Docker data-root 应为 /data1/docker，实际为 $docker_root"
+    local total_gb used_pct
+    total_gb="$(df -BG --output=size /data1 | tail -1 | tr -dc '0-9')"
+    used_pct="$(df -P /data1 | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
+    (( total_gb >= EXPECTED_DATA_DISK_GB - 5 )) || die "/data1 容量不足: ${total_gb}GB"
+    (( used_pct < 85 )) || die "/data1 使用率 ${used_pct}% 已达到阻断阈值"
+    (( used_pct < 70 )) || warn "/data1 使用率 ${used_pct}% 已超过规划线"
+}
+
+check_identity() {
+    local meta="$HOST_DATA_DIR/meta.properties" actual
+    [[ -f "$meta" ]] || return 0
+    actual="$(awk -F= '$1=="cluster.id" {print $2}' "$meta")"
+    [[ "$actual" == "$CLUSTER_ID" ]] || die "数据目录 cluster.id 不匹配"
+    actual="$(awk -F= '$1=="node.id" {print $2}' "$meta")"
+    [[ "$actual" == "$NODE_ID" ]] || die "数据目录 node.id 不匹配"
+    if [[ "$NODE_ROLE" == controller ]]; then
+        actual="$(awk -F= '$1=="directory.id" {print $2}' "$meta")"
+        [[ -z "$actual" || "$actual" == "$DIRECTORY_ID" ]] || die "controller directory.id 不匹配"
+    fi
+}
+
+check() {
+    load_env
+    check_files
+    check_runtime
+    check_host
+    check_identity
+    info "$NODE_ROLE-$NODE_INDEX 节点检查通过"
+}
+
+prepare() {
+    check
+    mkdir -p "$HOST_DATA_DIR"
+    chmod 750 "$HOST_DATA_DIR"
+    if [[ -f "$HOST_DATA_DIR/meta.properties" ]]; then
+        info "数据目录已经格式化，身份一致，跳过"
+        return
+    fi
+    if find "$HOST_DATA_DIR" -mindepth 1 -print -quit | grep -q .; then
+        die "数据目录非空但不存在 meta.properties，拒绝格式化: $HOST_DATA_DIR"
+    fi
+
+    local -a format_args=(format --cluster-id "$CLUSTER_ID" --config /etc/kafka/custom/server.properties)
+    if [[ "$NODE_ROLE" == controller ]]; then
+        format_args+=(--initial-controllers "$INITIAL_CONTROLLERS")
+    else
+        format_args+=(--no-initial-controllers)
+    fi
+    info "格式化 $NODE_ROLE-$NODE_INDEX 数据目录"
+    docker run --rm --network host \
+        -v "$SCRIPT_DIR/config:/etc/kafka/custom:ro" \
+        -v "$HOST_DATA_DIR:/var/lib/kafka/data" \
+        --entrypoint /opt/kafka/bin/kafka-storage.sh \
+        "$KAFKA_IMAGE" "${format_args[@]}"
+    check_identity
+    info "prepare 完成"
+}
+
+start() {
+    check
+    [[ -f "$HOST_DATA_DIR/meta.properties" ]] || die "尚未 prepare"
+    compose up -d
+    compose ps
+}
+stop() { load_env; check_files; check_runtime; compose down; }
+restart() { load_env; check_files; check_runtime; check_identity; compose restart; compose ps; }
+status() { load_env; check_files; check_runtime; compose ps; }
+logs() { load_env; check_files; check_runtime; compose logs -f --tail="${2:-200}"; }
+
+usage() {
+    echo "用法: $0 {check|prepare|start|stop|restart|status|logs [tail]}"
+}
+
+case "${1:-}" in
+    check) check ;;
+    prepare) prepare ;;
+    start) start ;;
+    stop) stop ;;
+    restart) restart ;;
+    status) status ;;
+    logs) logs "$@" ;;
+    *) usage; [[ -z "${1:-}" ]] || exit 1 ;;
+esac

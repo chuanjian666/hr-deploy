@@ -1,0 +1,28 @@
+# Kafka 集群初始化配置。复制为 kafka-admin.conf 后可直接编辑或执行 cluster init 交互修改。
+CLUSTER_NAME="hr-kafka"
+KAFKA_IMAGE="apache/kafka:4.3.2"
+DEPLOY_PROFILE="standard"
+
+# 3 个 controller 与 3 个 broker，按序号一一共置时可填写相同地址。
+CONTROLLER_HOSTS=""
+BROKER_HOSTS=""
+
+CONTROLLER_PORT="9093"
+BROKER_PORT="9092"
+ENABLE_EXTERNAL_LISTENER="false"
+EXTERNAL_PORT="19092"
+
+TARGET_DEPLOY_ROOT="/root/deploy/kafka"
+DATA_ROOT="/data1/kafka"
+DOCKER_DATA_ROOT="/data1/docker"
+EXPECTED_DATA_DISK_GB="512"
+
+LOG_RETENTION_HOURS="168"
+LOG_SEGMENT_BYTES="1073741824"
+LOG_ROLL_HOURS="24"
+LOG_RETENTION_CHECK_INTERVAL_MS="300000"
+DELETE_TOPIC_ENABLE="true"
+
+LOG_MAX_SIZE="50m"
+LOG_MAX_FILE="5"
+NOFILE_LIMIT="100000"
