@@ -6,3 +6,4 @@
 kafka/generated/
 kafka/cluster/
 kafka/config/kafka-admin.conf
+data-hub-deploy
