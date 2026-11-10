@@ -1,0 +1,44 @@
+name: hr-kafka-local-test
+x-node: &node
+  image: hr-kafka-local-test-node:1
+  privileged: true
+  cpus: 2
+  mem_limit: 4g
+  environment:
+    DOCKER_TLS_CERTDIR: ""
+  stop_grace_period: 60s
+services:
+  node-1:
+    <<: *node
+    build: .
+    hostname: node-1
+    volumes:
+      - disk-1:/test-disk
+    networks:
+      test:
+        ipv4_address: 172.30.93.11
+  node-2:
+    <<: *node
+    hostname: node-2
+    volumes:
+      - disk-2:/test-disk
+    networks:
+      test:
+        ipv4_address: 172.30.93.12
+  node-3:
+    <<: *node
+    hostname: node-3
+    volumes:
+      - disk-3:/test-disk
+    networks:
+      test:
+        ipv4_address: 172.30.93.13
+networks:
+  test:
+    ipam:
+      config:
+        - subnet: 172.30.93.0/24
+volumes:
+  disk-1:
+  disk-2:
+  disk-3:

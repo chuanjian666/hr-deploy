@@ -20,7 +20,8 @@ read_existing_identities() {
     CONTROLLER_DIRECTORY_IDS=()
     [[ -f "$manifest" ]] || return 0
     require_command python3
-    mapfile -t identity_lines < <(python3 - "$manifest" <<'PY'
+    local identity_lines=() line
+    while IFS= read -r line; do identity_lines+=("$line"); done < <(python3 - "$manifest" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as f:
     data=json.load(f)
@@ -40,7 +41,8 @@ interactive_config() {
     echo "=== Kafka 集群初始化 ==="
     read -r -p "集群名称 [$CLUSTER_NAME]: " input; [[ -z "$input" ]] || save_config CLUSTER_NAME "$input"
     read -r -p "Kafka 镜像 [$KAFKA_IMAGE]: " input; [[ -z "$input" ]] || save_config KAFKA_IMAGE "$input"
-    read -r -p "部署规格 standard/minimal [$DEPLOY_PROFILE]: " input; [[ -z "$input" ]] || save_config DEPLOY_PROFILE "$input"
+    read -r -p "部署规格 standard/minimal/test（test 仅功能验证）[$DEPLOY_PROFILE]: " input; [[ -z "$input" ]] || save_config DEPLOY_PROFILE "$input"
+    read -r -p "磁盘容量 GB（生产至少 512，test 至少 20）[$EXPECTED_DATA_DISK_GB]: " input; [[ -z "$input" ]] || save_config EXPECTED_DATA_DISK_GB "$input"
     read -r -p "3 个 controller 地址，逗号分隔 [$CONTROLLER_HOSTS]: " input; [[ -z "$input" ]] || save_config CONTROLLER_HOSTS "$input"
     read -r -p "3 个 broker 地址，逗号分隔 [$BROKER_HOSTS]: " input; [[ -z "$input" ]] || save_config BROKER_HOSTS "$input"
     load_config
@@ -55,6 +57,10 @@ profile_values() {
         minimal)
             CONTROLLER_CPU=1; CONTROLLER_MEMORY=2g; CONTROLLER_HEAP=1g
             BROKER_CPU=2; BROKER_MEMORY=10g; BROKER_HEAP=4g
+            ;;
+        test)
+            CONTROLLER_CPU=0.5; CONTROLLER_MEMORY=512m; CONTROLLER_HEAP=256m
+            BROKER_CPU=1; BROKER_MEMORY=1536m; BROKER_HEAP=512m
             ;;
     esac
 }
@@ -93,6 +99,7 @@ KAFKA_IMAGE=$KAFKA_IMAGE
 COMPOSE_PROJECT_NAME=$project
 CONTAINER_NAME=$container
 NODE_ROLE=$role
+DEPLOY_PROFILE=$DEPLOY_PROFILE
 NODE_INDEX=$index
 NODE_ID=$node_id
 DIRECTORY_ID=$directory_id
@@ -236,6 +243,13 @@ Kafka 镜像：\`$KAFKA_IMAGE\`
 
 部署包生成不代表目标节点检查或部署已完成。
 EOF
+    if [[ "$DEPLOY_PROFILE" == test ]]; then
+        cat >> "$output/README.md" <<EOF
+
+test 规格仅用于本地功能验证，不用于生产或性能测试。
+环境要求与验收步骤见源码 \`kafka/docs/local-test.md\`。
+EOF
+    fi
 }
 
 cluster_init() {

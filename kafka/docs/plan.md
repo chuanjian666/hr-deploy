@@ -1,13 +1,13 @@
 # Kafka 集群部署方案
 
-本文依据 [spec.md](spec.md) 说明 Kafka 集群的部署结构、配置项、操作流程和验收标准。管理机初始化和节点部署脚本已经按本方案实现；本轮只执行基本静态校验，不执行实际部署。
+本文依据 [spec.md](spec.md) 说明 Kafka 集群的部署结构、配置项、操作流程和验收标准。管理机初始化和节点部署脚本已经按本方案实现；已完成静态校验及 `test` 档在本地 3 个隔离 Linux 节点中的实际部署和功能验证，详见 [验证记录](local-test.md#验证记录)。尚未完成三台独立 VM 或生产验收。
 
 ## 1. 设计结论
 
 | 项目 | 方案 |
 | --- | --- |
 | 部署目标 | 3 个 broker + 3 个 controller，共 6 个独立 Kafka 进程 |
-| 默认拓扑 | 3 台 Linux VM，每台共置 1 个 controller 和 1 个 broker；标准规格 8C32G，最小规格 4C16G |
+| 默认拓扑 | 3 台 Linux VM，每台共置 1 个 controller 和 1 个 broker；生产规格 8C32G / 4C16G，测试规格 2C4G |
 | 角色模型 | KRaft，controller 与 broker 分离，不使用 combined role |
 | 部署方式 | Docker Compose v2，默认使用 host 网络 |
 | 默认镜像 | `apache/kafka:4.3.2`，允许在集群初始化（`cluster init`）阶段替换完整镜像地址 |
@@ -252,10 +252,11 @@ Kafka 角色层面的约束如下：
 | --- | --- | --- | --- | --- |
 | 标准 `standard` | 8 vCPU / 32 GiB | 512 GB HDD | 默认生产规格 | 适用于 HR 内部消息队列的常规负载，仍需观察实际吞吐、分区和磁盘时延 |
 | 最小 `minimal` | 4 vCPU / 16 GiB | 512 GB HDD | 低吞吐、较少 topic 和分区的小型生产集群 | 严格控制同机其他服务，并在上线前完成容量压测和单节点故障测试 |
+| 测试 `test` | 2 vCPU / 4 GiB | 至少 20 GB，可与系统盘共用 | 仅本地 3 节点部署脚本及 Kafka 功能验证 | 每台共置 1 controller + 1 broker；仅少量消息，不用于生产，不做性能测试 |
 
-本方案只提供以上两个固定档位，不在集群初始化阶段提供 `custom` 规格。实际资源不符合任一档位时，应先重新评估并修改方案，而不是绕过校验。
+本方案提供以上三个固定档位，不在集群初始化阶段提供 `custom` 规格。默认仍为 `standard`，测试档必须显式选择 `test` 并设置 `EXPECTED_DATA_DISK_GB=20`。实际资源不符合任一档位时，应先重新评估并修改方案，而不是绕过校验。
 
-不建议把低于单台 4C16G 的 controller/broker 共置节点定义为生产规格。2C8G 可以用于开发或功能验证，但 JVM、页缓存、复制恢复和 OS 的资源余量过小，不纳入生产档位。
+低于单台 4C16G 的 controller/broker 共置节点不定义为生产规格。`test` 是无吞吐要求的功能验证预算，已在 3 个隔离 Linux 节点中验证基础功能，不能据此推断任何生产容量或独立 VM 的故障隔离行为。
 
 ### 8.2 角色资源分配
 
@@ -277,13 +278,25 @@ Kafka 角色层面的约束如下：
 
 这些数值是容器上限和初始预算，不是吞吐保证。broker 依赖文件页缓存，不能把容器内存全部分给 JVM。最小规格中 broker 保留约 6 GiB 给堆外内存、线程和页缓存；如果同机还运行采集器、数据库或其他数据服务，则应使用标准规格。
 
+测试规格（每台 VM）：
+
+| 用途 | CPU limit | memory limit | JVM heap |
+| --- | ---: | ---: | ---: |
+| controller | 0.5 vCPU | 512 MiB | 256 MiB |
+| broker | 1 vCPU | 1536 MiB | 512 MiB |
+| OS、Docker 和临时 CLI 余量 | 0.5 vCPU | 2 GiB | — |
+
+3 台测试 VM 合计 6 vCPU / 12 GiB 内存 / 至少 60 GB 磁盘，宿主机另外保留自身资源。临时 Kafka CLI 使用 128–256 MiB heap，避免与 broker 争抢内存。保留 controller/broker 分离、3 副本和 min ISR 2，不以合并角色或降低副本数节省资源。
+
 角色拆分到独立 VM 时，不能机械沿用共置节点的总规格。应按角色工作量重新评估；controller 的资源主要受 broker 数量、topic/分区规模及元数据变更频率影响，broker 的资源主要受吞吐、连接数、分区副本和磁盘性能影响。
 
 ### 8.3 运行和校验规则
 
 Compose 使用 `cpus`、`mem_limit` 和 `ulimits.nofile`。初始 `nofile` 建议 100000；目标机 `check` 同时检查时间同步、磁盘挂载、剩余空间、文件系统权限和 Docker data-root 空间。
 
-选择最小规格时，`cluster init` 必须额外收集并在摘要中显示：预期峰值吞吐、topic 数、总分区数、平均消息大小、客户端连接数、保留时间和数据盘性能。工具只能据此给出风险提示，不能在没有基准测试的情况下判定容量一定充足。
+选择最小生产规格时，上线前需额外确认：预期峰值吞吐、topic 数、总分区数、平均消息大小、客户端连接数、保留时间和数据盘性能。工具不能在没有基准测试的情况下判定容量一定充足。`test` 不做这些容量和性能验收，只执行基础功能验证。
+
+`test` 的节点检查允许 `/data1` 是普通目录，Docker data-root 仍为 `/data1/docker`；所在文件系统需至少 20 GB 容量（允许 1 GB 容量取整误差）和 5 GB 可用空间。目录、身份和文件摘要校验继续执行。`standard` / `minimal` 继续要求 `/data1` 独立挂载、Docker data-root 为 `/data1/docker`、至少 512 GB 数据盘。
 
 最小规格上线前至少验证：
 
@@ -295,9 +308,9 @@ Compose 使用 `cpus`、`mem_limit` 和 `ulimits.nofile`。初始 `nofile` 建�
 
 ### 8.4 存储规划
 
-两个规格均默认每台 VM 只配置一块 512 GB HDD，挂载到 `/data1`。Docker data-root 和 Kafka 持久化数据使用这块盘，通过子目录隔离；Kafka 部署包、Compose 和配置放在系统盘 `/root/deploy/kafka`。HDD 适用于当前 HR 内部系统消息队列的低吞吐场景，不建议再在该盘上运行数据库等高 I/O 服务。
+两个生产规格均默认每台 VM 只配置一块 512 GB HDD，挂载到 `/data1`。Docker data-root 和 Kafka 持久化数据使用这块盘，通过子目录隔离；Kafka 部署包、Compose 和配置放在系统盘 `/root/deploy/kafka`。HDD 适用于当前 HR 内部系统消息队列的低吞吐场景，不建议再在该盘上运行数据库等高 I/O 服务。`test` 可直接使用至少 20 GB 的 VM 系统盘，手动创建 `/data1` 即可，保留相同 Kafka 目录布局；只保留少量测试消息，不代表可存储 7 天业务流量。
 
-默认存储参数：
+生产默认存储参数（`test` 除磁盘门槛和挂载要求外沿用相同 Kafka 默认参数）：
 
 | 项目 | 默认值 |
 | --- | --- |
@@ -371,7 +384,7 @@ broker 初始容量按下式估算：
 | 镜像 | 默认 `apache/kafka:4.3.2`；填写完整镜像地址，可使用私有 registry |
 | 镜像架构 | 与目标 VM 的 amd64/arm64 匹配；实现时拉取并记录 digest |
 | 分发方式 | 管理员人工复制节点包；不自动连接或修改远端主机 |
-| 部署规格 | 默认 `standard`（8C32G + 512 GB HDD）；可选 `minimal`（4C16G + 512 GB HDD）；均默认保留 7 天 |
+| 部署规格 | 默认 `standard`（8C32G + 512 GB HDD）；可选 `minimal`（4C16G + 512 GB HDD）、`test`（2C4G + 至少 20 GB，仅功能验证）；均默认保留 7 天 |
 | Docker 环境 | Linux、Docker Engine、可访问的 Docker daemon、Compose v2；可使用 `../docker/setup-docker.sh` 准备，由目标机 `check` 最终确认 |
 | 日志 | stdout/stderr，Docker `json-file` 默认 50 MiB × 5 |
 | 时区与 NTP | 3 台 VM 必须时间同步 |
@@ -491,11 +504,13 @@ auto.create.topics.enable=false
 - 已有 `meta.properties` 与节点包身份是否一致；
 - 到其他角色地址的连通性和 listener 的网络访问边界。
 
-本节是 Kafka 节点脚本的实现约束。`deploy.sh check` 已实现这些检查，但必须在目标 Linux 节点执行；本轮基本校验不运行目标机检查，不拉取镜像，也不启动容器。
+本节是 Kafka 节点脚本的实现约束，包含尚需完善的检查项；当前 `deploy.sh check` 执行文件摘要、Docker/Compose、路径、磁盘和已有身份检查。静态校验不运行目标机检查；本地 `test` 验证已在 3 个隔离 Linux 节点中实际执行 `check`、`prepare` 和生命周期命令。
 
 ### `prepare`
 
 先完整执行 `check`，然后创建目录并按第 6 节进行幂等格式化。`prepare` 不启动长期运行的 Kafka 服务，也不覆盖已存在且身份不一致的数据。
+
+`prepare` 从实际镜像解析运行 UID/GID，并设置挂载配置目录、配置文件和数据目录的所有者，避免 root 生成的受限文件使容器用户无法读取或写入。storage format 使用 128–256 MiB 的临时 CLI heap，成功后必须存在 `meta.properties`。重复 `prepare` 仍检查身份，只修复挂载目录权限并跳过格式化。
 
 ### `start`
 
@@ -579,7 +594,19 @@ scp -r cluster/nodes/broker-1-<host>/     root@<host>:/root/deploy/kafka/broker-
 - 重复 `prepare` 不重新格式化；
 - 配置摘要或身份不一致时拒绝启动。
 
-### 14.3 性能验收
+### 14.3 测试规格的最小验收
+
+本地 `test` 只要求验证部署脚本功能和部署后的 Kafka 基础行为，不执行第 14.4 节的性能验收，也不要求完整的生产故障演练：
+
+1. 3 台 VM 上的 6 个角色包均能完成 `check`、`prepare`、`start`、`status` 和 `stop`。
+2. quorum 有 leader，3 个 controller 为 voter 且复制正常，3 个 broker 注册。
+3. 显式创建 3 分区、3 副本、min ISR 2 的测试 Topic，确认每个分区 ISR 为 3。
+4. 以 `acks=all` 发送少量消息并消费比对；访问不存在的 Topic 不会触发自动创建。
+5. 重启单个 broker，等待 ISR 恢复后再次消费已有消息；重复 `prepare` 跳过格式化，身份保持不变。
+
+命令示例见 [本地最小功能验证](local-test.md)。静态生成校验不能证明上述运行验收已经通过。
+
+### 14.4 性能验收
 
 功能验收不能替代容量验收。上线前使用接近真实的消息大小、压缩算法、分区数、producer 并发、consumer 并发和保留策略压测，并记录：
 
@@ -620,7 +647,8 @@ scp -r cluster/nodes/broker-1-<host>/     root@<host>:/root/deploy/kafka/broker-
 2. 已实现身份 manifest 和可重复的 `cluster init`。
 3. 已实现 properties、Compose 和角色包模板。
 4. 已实现节点 `check`、`prepare`、`start/stop/restart/status/logs`。
-5. 已完成标准/最小规格的节点包生成、Shell 语法、JSON、文件摘要和 Compose 静态校验。
-6. 尚未拉取或运行 4.3.2 镜像，也未执行目标节点检查、storage format 和三节点部署验收。正式部署前需要验证镜像入口、UID/GID、format 参数、信号退出和实际集群行为。
+5. 支持标准/最小生产/测试三档规格的节点包生成、Shell 语法、JSON、文件摘要和 Compose 静态校验。
+6. 已使用实际 arm64 `apache/kafka:4.3.2` 镜像，在 3 个隔离 Linux 节点中执行 `test` 档的节点检查、storage format、启动、quorum、broker、3 副本生产消费、幂等 prepare、broker 重启和容器重建后的消息保留验证；发现并修复镜像用户无权读取 root 配置的问题。
+7. 独立 VM、amd64、完整生产故障场景、信号退出时序和容量验收仍未执行。本地功能通过不代表生产部署验收通过。
 
-在实际镜像和三节点部署验证完成前，不把生成包标记为已通过生产部署验收。
+生产部署仍需完成目标环境的检查和第 14 节相应验收。

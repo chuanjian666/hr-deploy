@@ -59,12 +59,13 @@ scp -r cluster/nodes/broker-1-10.0.0.11 root@10.0.0.11:/root/deploy/kafka/broker
 
 ## 固定规格
 
-| 规格 | VM | controller | broker | OS/Docker 预留 |
-| --- | --- | --- | --- | --- |
-| standard | 8C32G | 1C2G，heap 1G | 6C24G，heap 8G | 1C6G |
-| minimal | 4C16G | 1C2G，heap 1G | 2C10G，heap 4G | 1C4G |
+| 规格 | 每台 VM | controller | broker | OS/Docker 预留 | 用途 |
+| --- | --- | --- | --- | --- | --- |
+| standard | 8C32G | 1C2G，heap 1G | 6C24G，heap 8G | 1C6G | 标准生产 |
+| minimal | 4C16G | 1C2G，heap 1G | 2C10G，heap 4G | 1C4G | 最小生产，需压测 |
+| test | 2C4G | 0.5C512M，heap 256M | 1C1536M，heap 512M | 0.5C2G | 仅本地功能验证 |
 
-每台使用一块挂载到 `/data1` 的 512 GB HDD：
+生产两档每台使用一块挂载到 `/data1` 的 512 GB HDD；`test` 每台只需至少 20 GB 磁盘，可使用系统盘。目录布局一致：
 
 ```text
 /data1/docker                         Docker data-root
@@ -74,6 +75,8 @@ scp -r cluster/nodes/broker-1-10.0.0.11 root@10.0.0.11:/root/deploy/kafka/broker
 ```
 
 Kafka 默认保留 7 天数据。完整方案见 [docs/plan.md](docs/plan.md)。
+
+本地最小验证的环境、操作步骤和验证记录见 [docs/local-test.md](docs/local-test.md)。
 
 ## 当前边界
 

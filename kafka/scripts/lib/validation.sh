@@ -47,7 +47,7 @@ parse_hosts() {
 validate_cluster_config() {
     validate_name CLUSTER_NAME "$CLUSTER_NAME"
     validate_image KAFKA_IMAGE "$KAFKA_IMAGE"
-    [[ "$DEPLOY_PROFILE" == standard || "$DEPLOY_PROFILE" == minimal ]] || die "DEPLOY_PROFILE 必须是 standard 或 minimal"
+    [[ "$DEPLOY_PROFILE" == standard || "$DEPLOY_PROFILE" == minimal || "$DEPLOY_PROFILE" == test ]] || die "DEPLOY_PROFILE 必须是 standard、minimal 或 test"
     parse_hosts CONTROLLER_HOSTS "$CONTROLLER_HOSTS"; local controllers=("${PARSED_HOSTS[@]}")
     parse_hosts BROKER_HOSTS "$BROKER_HOSTS"; local brokers=("${PARSED_HOSTS[@]}")
     validate_port CONTROLLER_PORT "$CONTROLLER_PORT"
@@ -65,7 +65,12 @@ validate_cluster_config() {
     [[ "$DATA_ROOT" == /data1/kafka ]] || die "DATA_ROOT 当前固定为 /data1/kafka"
     [[ "$DOCKER_DATA_ROOT" == /data1/docker ]] || die "DOCKER_DATA_ROOT 当前固定为 /data1/docker"
     validate_uint EXPECTED_DATA_DISK_GB "$EXPECTED_DATA_DISK_GB"
-    (( EXPECTED_DATA_DISK_GB >= 512 )) || die "EXPECTED_DATA_DISK_GB 不能小于 512"
+    if [[ "$DEPLOY_PROFILE" == test ]]; then
+        (( EXPECTED_DATA_DISK_GB >= 20 )) || die "test 规格 EXPECTED_DATA_DISK_GB 不能小于 20"
+        log_warn "test 规格仅用于本地 3 节点部署脚本和 Kafka 功能验证，不用于生产或性能测试"
+    else
+        (( EXPECTED_DATA_DISK_GB >= 512 )) || die "生产规格 EXPECTED_DATA_DISK_GB 不能小于 512"
+    fi
     validate_uint LOG_RETENTION_HOURS "$LOG_RETENTION_HOURS"
     validate_uint LOG_SEGMENT_BYTES "$LOG_SEGMENT_BYTES"
     validate_uint LOG_ROLL_HOURS "$LOG_ROLL_HOURS"
@@ -82,5 +87,5 @@ validate_cluster_config() {
             [[ "${brokers[$i]}" != "${brokers[$j]}" ]] || die "broker 地址不能重复: ${brokers[$i]}"
         done
     done
-    log_success "配置校验通过（规格: $DEPLOY_PROFILE）"
+    log_success "配置校验通过（规格: ${DEPLOY_PROFILE}）"
 }

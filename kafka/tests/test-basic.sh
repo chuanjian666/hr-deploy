@@ -48,6 +48,61 @@ assert_eq "$CPU_LIMIT/$MEMORY_LIMIT/$KAFKA_HEAP_OPTS" "1/2g/-Xms1g -Xmx1g"
 source "$TMP/cluster/nodes/broker-1-10.20.0.11/.env"
 assert_eq "$CPU_LIMIT/$MEMORY_LIMIT/$KAFKA_HEAP_OPTS" "2/10g/-Xms4g -Xmx4g"
 
+# The test profile permits a small disk without changing cluster identities or replication.
+"$ROOT/kafka-admin.sh" config set DEPLOY_PROFILE test >/dev/null
+"$ROOT/kafka-admin.sh" config set EXPECTED_DATA_DISK_GB 20 >/dev/null
+"$ROOT/kafka-admin.sh" cluster init >/dev/null
+"$ROOT/kafka-admin.sh" cluster validate >/dev/null
+assert_eq "$(manifest_identity)" "$first_identity"
+python3 - "$TMP/cluster" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / "manifest.json").read_text())
+assert manifest["profile"] == "test"
+assert manifest["storage"]["diskGB"] == 20
+assert len(manifest["controllers"]) == len(manifest["brokers"]) == 3
+nodes = list((root / "nodes").iterdir())
+assert len(nodes) == 6
+for node in nodes:
+    assert json.loads((node / "manifest.json").read_text())["profile"] == "test"
+    props = (node / "config/server.properties").read_text()
+    if node.name.startswith("broker-"):
+        for setting in ("default.replication.factor=3", "min.insync.replicas=2",
+                        "offsets.topic.replication.factor=3", "transaction.state.log.replication.factor=3",
+                        "transaction.state.log.min.isr=2", "auto.create.topics.enable=false"):
+            assert setting in props.splitlines(), (node, setting)
+assert "不用于生产" in (root / "README.md").read_text()
+PY
+for role in controller broker; do
+    for index in 1 2 3; do
+        source "$TMP/cluster/nodes/$role-$index-10.20.0.$((10+index))/.env"
+        assert_eq "$DEPLOY_PROFILE/$EXPECTED_DATA_DISK_GB" "test/20"
+        if [[ "$role" == controller ]]; then
+            assert_eq "$CPU_LIMIT/$MEMORY_LIMIT/$KAFKA_HEAP_OPTS" "0.5/512m/-Xms256m -Xmx256m"
+        else
+            assert_eq "$CPU_LIMIT/$MEMORY_LIMIT/$KAFKA_HEAP_OPTS" "1/1536m/-Xms512m -Xmx512m"
+        fi
+    done
+done
+
+# Small disks must still be rejected for production; rejected init must preserve existing packages.
+before_rejection="$(sha256sum "$TMP/cluster/manifest.json")"
+for profile in standard minimal; do
+    "$ROOT/kafka-admin.sh" config set DEPLOY_PROFILE "$profile" >/dev/null
+    if "$ROOT/kafka-admin.sh" cluster init >/dev/null 2>&1; then
+        echo "$profile unexpectedly accepted a 20 GB disk" >&2
+        exit 1
+    fi
+    assert_eq "$(sha256sum "$TMP/cluster/manifest.json")" "$before_rejection"
+done
+"$ROOT/kafka-admin.sh" config set DEPLOY_PROFILE test >/dev/null
+"$ROOT/kafka-admin.sh" config set EXPECTED_DATA_DISK_GB 19 >/dev/null
+if "$ROOT/kafka-admin.sh" config validate >/dev/null 2>&1; then
+    echo "test unexpectedly accepted a disk smaller than 20 GB" >&2
+    exit 1
+fi
+"$ROOT/kafka-admin.sh" config set EXPECTED_DATA_DISK_GB 20 >/dev/null
+
 # Invalid topology must fail.
 perl -0pi -e 's/CONTROLLER_HOSTS=.*/CONTROLLER_HOSTS=10.20.0.11,10.20.0.12/' "$TMP/kafka-admin.conf"
 if "$ROOT/kafka-admin.sh" config validate >/dev/null 2>&1; then

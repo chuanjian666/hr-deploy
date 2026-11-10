@@ -55,6 +55,8 @@ Kafka 节点部署包随后执行：
 - 共享数据盘的总容量和剩余空间满足 Docker 与 Kafka 的合计要求；
 - Kafka Compose 文件能够通过 `docker compose config --quiet` 校验。
 
-Kafka 的 `deploy.sh check` 已实现这些检查，但需要在目标 Linux 节点的实际部署目录中执行。本轮基本校验只验证生成产物，不运行目标机检查。
+Kafka 的 `test` 规格允许 `/data1` 使用系统盘目录，详细环境要求及验收步骤见 [本地最小功能验证](../kafka/docs/local-test.md)。
+
+Kafka 的 `deploy.sh check` 需要在目标 Linux 节点的实际部署目录中执行，完整检查能力以脚本实现为准。静态校验只验证生成产物。
 
 > `setup-docker.sh` 会修改 `/etc/docker/daemon.json` 并重启 Docker。已有 Docker 工作负载的节点应先审核配置和安排变更窗口。脚本会在覆盖配置前备份原文件。

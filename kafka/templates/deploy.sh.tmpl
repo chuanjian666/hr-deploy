@@ -42,11 +42,21 @@ check_runtime() {
 check_host() {
     [[ "$DEPLOY_DIR" == /root/deploy/kafka/* ]] || die "DEPLOY_DIR 不符合规划: $DEPLOY_DIR"
     [[ "$HOST_DATA_DIR" == /data1/kafka/* ]] || die "HOST_DATA_DIR 不符合规划: $HOST_DATA_DIR"
-    [[ "$(pwd -P)" == "$DEPLOY_DIR" || "$SCRIPT_DIR" == "$DEPLOY_DIR" ]] || warn "节点包当前位于 $SCRIPT_DIR，正式部署路径应为 $DEPLOY_DIR"
-    mountpoint -q /data1 || die "/data1 不是独立挂载点"
+    [[ "$(pwd -P)" == "$DEPLOY_DIR" || "$SCRIPT_DIR" == "$DEPLOY_DIR" ]] || warn "节点包当前位于 ${SCRIPT_DIR}，部署路径应为 $DEPLOY_DIR"
     local docker_root
     docker_root="$(docker info 2>/dev/null | awk -F': ' '/Docker Root Dir/ {print $2; exit}')"
     [[ "$docker_root" == "/data1/docker" ]] || die "Docker data-root 应为 /data1/docker，实际为 $docker_root"
+    if [[ "${DEPLOY_PROFILE:-}" == test ]]; then
+        warn "test 规格：仅功能验证，允许 /data1 使用系统盘目录"
+        [[ -d /data1 ]] || die "请先创建 /data1 目录（test 规格不要求独立挂载）"
+        local total_gb available_gb
+        total_gb="$(df -BG --output=size /data1 | tail -1 | tr -dc '0-9')"
+        available_gb="$(df -BG --output=avail /data1 | tail -1 | tr -dc '0-9')"
+        (( total_gb >= EXPECTED_DATA_DISK_GB - 1 )) || die "/data1 容量不足: ${total_gb}GB"
+        (( available_gb >= 5 )) || die "/data1 可用空间不足 5GB"
+        return
+    fi
+    mountpoint -q /data1 || die "/data1 不是独立挂载点"
     local total_gb used_pct
     total_gb="$(df -BG --output=size /data1 | tail -1 | tr -dc '0-9')"
     used_pct="$(df -P /data1 | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
@@ -80,7 +90,14 @@ check() {
 prepare() {
     check
     mkdir -p "$HOST_DATA_DIR"
-    chmod 750 "$HOST_DATA_DIR"
+    # Resolve the configured image user instead of assuming the container runs as root.
+    local image_owner
+    image_owner="$(docker run --rm --network none --entrypoint /bin/sh "$KAFKA_IMAGE" \
+        -ec 'printf "%s:%s\n" "$(id -u)" "$(id -g)"')"
+    [[ "$image_owner" =~ ^[0-9]+:[0-9]+$ ]] || die "无法确定 Kafka 镜像运行 UID/GID: $image_owner"
+    chown "$image_owner" "$HOST_DATA_DIR" "$SCRIPT_DIR/config" \
+        "$SCRIPT_DIR/config/server.properties" "$SCRIPT_DIR/config/log4j2.yaml"
+    chmod 750 "$HOST_DATA_DIR" "$SCRIPT_DIR/config"
     if [[ -f "$HOST_DATA_DIR/meta.properties" ]]; then
         info "数据目录已经格式化，身份一致，跳过"
         return
@@ -97,10 +114,12 @@ prepare() {
     fi
     info "格式化 $NODE_ROLE-$NODE_INDEX 数据目录"
     docker run --rm --network host \
+        -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
         -v "$SCRIPT_DIR/config:/etc/kafka/custom:ro" \
         -v "$HOST_DATA_DIR:/var/lib/kafka/data" \
         --entrypoint /opt/kafka/bin/kafka-storage.sh \
         "$KAFKA_IMAGE" "${format_args[@]}"
+    [[ -f "$HOST_DATA_DIR/meta.properties" ]] || die "格式化完成后缺少 meta.properties"
     check_identity
     info "prepare 完成"
 }
