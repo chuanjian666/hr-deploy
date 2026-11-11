@@ -17,6 +17,10 @@ ensure_config() {
 
 load_config() {
     ensure_config
+    # 兼容尚未包含认证选项的旧配置文件。
+    ENABLE_AUTH=false
+    AUTH_USERNAME=admin
+    AUTH_PASSWORD=""
     # 配置文件是本工具管理的受信任 Bash 文件。
     # shellcheck disable=SC1090
     source "$KAFKA_CONFIG_FILE"
@@ -48,7 +52,7 @@ save_config() {
 
 show_config() {
     ensure_config
-    grep -vE '^[[:space:]]*$' "$KAFKA_CONFIG_FILE"
+    awk '/^AUTH_PASSWORD=/ {print "AUTH_PASSWORD=<redacted>"; next} !/^[[:space:]]*$/ {print}' "$KAFKA_CONFIG_FILE"
 }
 
 reset_config() {

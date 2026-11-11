@@ -103,6 +103,78 @@ if "$ROOT/kafka-admin.sh" config validate >/dev/null 2>&1; then
 fi
 "$ROOT/kafka-admin.sh" config set EXPECTED_DATA_DISK_GB 20 >/dev/null
 
+# Authentication requires a password and a dedicated client port.
+"$ROOT/kafka-admin.sh" config set ENABLE_AUTH true >/dev/null
+if "$ROOT/kafka-admin.sh" config validate >/dev/null 2>&1; then
+    echo "authentication unexpectedly accepted an empty password" >&2; exit 1
+fi
+"$ROOT/kafka-admin.sh" config set AUTH_PASSWORD 'LocalTest-Password_2026' >/dev/null
+"$ROOT/kafka-admin.sh" config set EXTERNAL_PORT 9092 >/dev/null
+if "$ROOT/kafka-admin.sh" cluster init >/dev/null 2>&1; then
+    echo "authentication unexpectedly accepted an internal port conflict" >&2; exit 1
+fi
+"$ROOT/kafka-admin.sh" config set EXTERNAL_PORT 19092 >/dev/null
+"$ROOT/kafka-admin.sh" cluster init >/dev/null
+"$ROOT/kafka-admin.sh" cluster validate >/dev/null
+assert_eq "$(manifest_identity)" "$first_identity"
+if "$ROOT/kafka-admin.sh" config show | grep -q 'LocalTest-Password_2026'; then
+    echo "config show exposed password" >&2; exit 1
+fi
+python3 - "$TMP/cluster" <<'AUTH_PY'
+import base64, hashlib, json, pathlib, re, stat, sys
+root = pathlib.Path(sys.argv[1])
+security = json.loads((root / 'manifest.json').read_text())['security']
+assert security == dict(authenticationEnabled=True, clientPort=19092, clientProtocol='SASL_PLAINTEXT', aclEnabled=False)
+credential = (root / 'bootstrap.scram').read_text()
+salt = base64.b64decode(re.search(r'salt="([^"]+)"', credential)[1])
+salted = base64.b64decode(re.search(r'saltedpassword="([^"]+)"', credential)[1])
+assert salted == hashlib.pbkdf2_hmac('sha512', b'LocalTest-Password_2026', salt, 8192)
+for node in (root / 'nodes').iterdir():
+    props = (node / 'config/server.properties').read_text()
+    assert 'authorizer.class.name' not in props
+    assert 'LocalTest-Password_2026' not in ''.join(p.read_text() for p in node.rglob('*') if p.is_file())
+    if node.name.startswith('broker-'):
+        assert 'EXTERNAL://0.0.0.0:19092' in props
+        assert 'EXTERNAL:SASL_PLAINTEXT' in props
+        assert 'inter.broker.listener.name=INTERNAL' in props
+        assert 'INTERNAL:PLAINTEXT' in props and 'CONTROLLER:PLAINTEXT' in props
+        assert 'listener.name.external.sasl.enabled.mechanisms=SCRAM-SHA-512' in props
+        assert not (node / 'config/bootstrap.scram').exists()
+    else:
+        assert (node / 'config/bootstrap.scram').read_text() == credential
+        assert 'SASL' not in props
+    assert stat.S_IMODE((node / 'config/server.properties').stat().st_mode) == 0o600
+client = root / 'clients/admin.properties'
+assert stat.S_IMODE(client.stat().st_mode) == 0o600
+assert 'security.protocol=SASL_PLAINTEXT' in client.read_text()
+assert '10.20.0.13:19092' in client.read_text()
+AUTH_PY
+first_credential="$(sha256sum "$TMP/cluster/bootstrap.scram")"
+"$ROOT/kafka-admin.sh" cluster init >/dev/null
+assert_eq "$(sha256sum "$TMP/cluster/bootstrap.scram")" "$first_credential"
+# Reject accidental bootstrap credential changes and preserve generated packages.
+"$ROOT/kafka-admin.sh" config set AUTH_PASSWORD 'Different-Password_2026' >/dev/null
+if "$ROOT/kafka-admin.sh" cluster init >/dev/null 2>&1; then
+    echo "changed bootstrap credentials unexpectedly accepted" >&2; exit 1
+fi
+assert_eq "$(sha256sum "$TMP/cluster/bootstrap.scram")" "$first_credential"
+"$ROOT/kafka-admin.sh" config set AUTH_PASSWORD 'LocalTest-Password_2026' >/dev/null
+# Credential integrity is part of node package validation.
+printf '\n' >> "$TMP/cluster/nodes/controller-1-10.20.0.11/config/bootstrap.scram"
+if "$ROOT/kafka-admin.sh" cluster validate >/dev/null 2>&1; then
+    echo "tampered SCRAM credential unexpectedly passed" >&2; exit 1
+fi
+# Disabling auth removes generated secrets and restores PLAINTEXT.
+"$ROOT/kafka-admin.sh" config set ENABLE_AUTH false >/dev/null
+"$ROOT/kafka-admin.sh" config set ENABLE_EXTERNAL_LISTENER true >/dev/null
+"$ROOT/kafka-admin.sh" cluster init >/dev/null
+"$ROOT/kafka-admin.sh" cluster validate >/dev/null
+[[ ! -e "$TMP/cluster/bootstrap.scram" && ! -e "$TMP/cluster/clients" ]]
+grep -q 'EXTERNAL:PLAINTEXT' "$TMP/cluster/nodes/broker-1-10.20.0.11/config/server.properties"
+# Older config files default to no authentication.
+sed -i.bak '/^ENABLE_AUTH=/d; /^AUTH_USERNAME=/d; /^AUTH_PASSWORD=/d' "$KAFKA_CONFIG_FILE"
+"$ROOT/kafka-admin.sh" config validate >/dev/null
+
 # Invalid topology must fail.
 perl -0pi -e 's/CONTROLLER_HOSTS=.*/CONTROLLER_HOSTS=10.20.0.11,10.20.0.12/' "$TMP/kafka-admin.conf"
 if "$ROOT/kafka-admin.sh" config validate >/dev/null 2>&1; then

@@ -28,6 +28,9 @@ check_files() {
     for file in .env docker-compose.yml manifest.json checksums.sha256 config/server.properties config/log4j2.yaml; do
         [[ -f "$SCRIPT_DIR/$file" ]] || die "缺少节点包文件: $file"
     done
+    if [[ "${ENABLE_AUTH:-false}" == true && "$NODE_ROLE" == controller ]]; then
+        [[ -f "$SCRIPT_DIR/config/bootstrap.scram" ]] || die "缺少初始 SCRAM 凭据"
+    fi
     (cd "$SCRIPT_DIR" && sha256sum -c checksums.sha256 >/dev/null) || die "节点包文件摘要不匹配"
 }
 
@@ -100,6 +103,9 @@ prepare() {
     chmod 750 "$HOST_DATA_DIR" "$SCRIPT_DIR/config"
     if [[ -f "$HOST_DATA_DIR/meta.properties" ]]; then
         info "数据目录已经格式化，身份一致，跳过"
+        if [[ "${ENABLE_AUTH:-false}" == true && "$NODE_ROLE" == controller ]]; then
+            warn "已有数据目录不会写入或更新初始账号；账号变更使用 kafka-configs.sh"
+        fi
         return
     fi
     if find "$HOST_DATA_DIR" -mindepth 1 -print -quit | grep -q .; then
@@ -109,6 +115,9 @@ prepare() {
     local -a format_args=(format --cluster-id "$CLUSTER_ID" --config /etc/kafka/custom/server.properties)
     if [[ "$NODE_ROLE" == controller ]]; then
         format_args+=(--initial-controllers "$INITIAL_CONTROLLERS")
+        if [[ "${ENABLE_AUTH:-false}" == true ]]; then
+            format_args+=(--add-scram "$(cat "$SCRIPT_DIR/config/bootstrap.scram")")
+        fi
     else
         format_args+=(--no-initial-controllers)
     fi

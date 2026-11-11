@@ -55,7 +55,12 @@ validate_cluster_config() {
     validate_boolean ENABLE_EXTERNAL_LISTENER "$ENABLE_EXTERNAL_LISTENER"
     validate_port EXTERNAL_PORT "$EXTERNAL_PORT"
     [[ "$CONTROLLER_PORT" != "$BROKER_PORT" ]] || die "CONTROLLER_PORT 和 BROKER_PORT 不能相同"
-    if [[ "$ENABLE_EXTERNAL_LISTENER" == true ]]; then
+    validate_boolean ENABLE_AUTH "$ENABLE_AUTH"
+    if [[ "$ENABLE_AUTH" == true ]]; then
+        validate_name AUTH_USERNAME "$AUTH_USERNAME"
+        [[ ${#AUTH_PASSWORD} -ge 16 && "$AUTH_PASSWORD" =~ ^[a-zA-Z0-9_@%+=:./-]+$ ]] || die "AUTH_PASSWORD 必须至少 16 位，仅支持 ASCII 字母、数字或 _@%+=:./-"
+    fi
+    if [[ "$ENABLE_EXTERNAL_LISTENER" == true || "$ENABLE_AUTH" == true ]]; then
         [[ "$EXTERNAL_PORT" != "$CONTROLLER_PORT" && "$EXTERNAL_PORT" != "$BROKER_PORT" ]] || die "EXTERNAL_PORT 不能与其他端口相同"
     fi
     validate_absolute_path TARGET_DEPLOY_ROOT "$TARGET_DEPLOY_ROOT"

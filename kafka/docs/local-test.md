@@ -81,6 +81,14 @@ bash kafka/tests/test-local.sh stop
 
 `up` 会拉取公开测试节点镜像、构建依赖环境，并向各节点导入同一 Kafka 镜像。默认网络为 `172.30.93.0/24`；如与本地网络冲突，需要同步调整 `tests/local/docker-compose.yml` 和 `tests/test-local.sh` 的地址。配置、生成包、日志及 `result.json` 位于 Git 忽略的 `generated/local-test/`。只有 `verify` 返回成功，且结果文件显示 `status=passed`，才能判定该次功能验收通过。
 
+### 启用认证的自动验证
+
+首次生成前，在 `generated/local-test/kafka-admin.conf` 中设置 `ENABLE_AUTH="true"`、`AUTH_USERNAME` 和符合要求的 `AUTH_PASSWORD`，配置文件权限保持 `600`。已有集群需按 [认证说明](authentication.md) 迁移，或在明确允许删除测试数据的情况下清空六个 Kafka 角色的数据后重新部署；修改配置或重复 `prepare` 不会改写已有账号。
+
+`verify` 会根据生成清单选择客户端端口和协议。开启认证时，读取管理机 `cluster/clients/admin.properties`，验证三个 broker 的认证入口、错误密码和无凭据连接被拒绝、INTERNAL 保持免认证，并创建独立的 `hr_producer` / `hr_consumer` 账号完成生产消费。业务账号密码随机生成，客户端文件保存在 `cluster/clients/`，权限 `600`；真实密码不写入命令日志。再次执行验收会更新这两个测试账号的密码。
+
+认证模式同样验证 controller quorum、复制、资源限制、关闭自动创建 Topic、重复 prepare 幂等，以及 broker 重启和容器重建后的消息保留。CLI 的临时连接配置会在容器重建后重新装入，不依赖容器内临时文件持久化。
+
 ## 验证记录
 
 2026-11-10 23:23（Asia/Shanghai）完成，结果通过。未执行性能测试。
@@ -129,3 +137,17 @@ Kafka CLI 原先继承服务的 stdout 日志配置，导致消费输出混入�
 当前会话因 Docker Desktop 凭据助手停滞，使用 `generated/local-test/docker-client/` 下无凭据的独立配置执行公开镜像操作，未修改用户 Docker 配置。若同样遇到该问题，可先记录当前 context 的 Docker endpoint，再通过 `DOCKER_HOST` 和 `DOCKER_CONFIG` 环境变量指定该 endpoint 与独立配置。
 
 未验证三台独立 VM 的重启和故障隔离、生产规格运行、amd64、完整事务流程及任何容量或性能指标。所有结论仅对应本次功能测试。
+
+## 认证集群重建验证记录
+
+2026-11-11 21:59（Asia/Shanghai）在用户授权下清空原六个 Kafka 角色的数据，保留三个测试节点及 Docker 镜像缓存，重新生成集群身份并完成认证部署。集群保留运行，未修改其他应用服务。
+
+- 集群 ID：`YdOT6wNaR8_6JhlFi4L6BA`。
+- 拓扑仍为三个 Docker-in-Docker Linux 测试节点，每节点共置独立 controller 和 broker；资源规格保持 `test`。
+- 客户端地址：`172.30.93.11:19092`、`172.30.93.12:19092`、`172.30.93.13:19092`，仅测试网络可达，未向宿主发布端口。
+- 客户端协议为 `SASL_PLAINTEXT`，机制为 `SCRAM-SHA-512`；INTERNAL/CONTROLLER 保持免认证；不启用 TLS/ACL。
+- 已创建 `admin`、`hr_producer`、`hr_consumer`，密码随机生成。对应客户端配置位于 `generated/local-test/cluster/clients/`，权限均为 `600`。
+- 已通过完整自动验收：三个 controller voter 且复制 lag 为零、三个 broker 注册、每个认证入口可连接、错误密码和无凭据连接被拒绝、INTERNAL 免认证、独立账号生产消费、3 分区/3 副本/min ISR 2/ISR 3、关闭自动创建 Topic、六角色重复 prepare 幂等、broker 重启和容器重建后消息保留，最终六角色均运行且无 OOM。
+- 机器可读结果：`generated/local-test/result.json`；原始验收输出位于同目录 `logs/`，不记录客户端明文密码。旧部署包和旧结果另存于 `generated/local-test/` 下 `cluster-before-auth-*` / `result-before-auth-*`，不包含旧 Kafka 数据备份。
+
+本次验证仍不替代三台独立 VM 的故障隔离验收，未执行性能测试。

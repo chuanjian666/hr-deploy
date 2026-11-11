@@ -2,8 +2,10 @@
 """Functional checks only; run against the isolated test-local.sh deployment."""
 import datetime
 import json
+import os
 import pathlib
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -11,17 +13,24 @@ import time
 runtime = pathlib.Path(sys.argv[1])
 logs = runtime / "logs"
 prefix = "hr-kafka-local-test"
-bootstrap = "172.30.93.11:9092,172.30.93.12:9092,172.30.93.13:9092"
+manifest = json.loads((runtime / "cluster/manifest.json").read_text())
+authentication = manifest.get("security", {}).get("authenticationEnabled", False)
+client_port = manifest.get("security", {}).get("clientPort", 9092)
+bootstrap = ",".join(f"172.30.93.{i}:{client_port}" for i in (11, 12, 13))
 stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 topic = f"deploy-smoke-{stamp.lower()}"
 sequence = 0
 checks = []
+client_configs = {}
 
 
 def run(args, *, data=None, check=True, timeout=60):
     global sequence
     sequence += 1
     result = subprocess.run(args, input=data, text=True, capture_output=True, timeout=timeout)
+    # Kafka may echo a malformed credential value in an error message.
+    result.stdout = re.sub(r"password=[^\],\s]+", "password=<redacted>", result.stdout)
+    result.stderr = re.sub(r"password=[^\],\s]+", "password=<redacted>", result.stderr)
     (logs / f"{stamp}-{sequence:03d}.log").write_text(
         "$ " + " ".join(args) + "\n" + result.stdout + result.stderr, encoding="utf-8"
     )
@@ -38,11 +47,42 @@ def deploy(index, role, command, **kwargs):
     return node(index, "bash", f"/root/deploy/kafka/{role}-{index}/deploy.sh", command, **kwargs)
 
 
-def cli(tool, *args, **kwargs):
+def cli(tool, *args, account="admin", internal=False, target=None, **kwargs):
+    options = ["--command-config", f"/tmp/kafka-verify-{account}.properties"] if authentication and not internal and account else []
+    endpoint = target or ("172.30.93.11:9092" if internal else bootstrap)
     return node(1, "docker", "exec", "-i", "-e", "KAFKA_HEAP_OPTS=-Xms128m -Xmx256m",
                 "-e", "KAFKA_LOG4J_OPTS=-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml",
                 f"{prefix}-broker-1", f"/opt/kafka/bin/{tool}",
-                "--bootstrap-server", bootstrap, *args, **kwargs)
+                "--bootstrap-server", endpoint, *options, *args, **kwargs)
+
+
+def install_private(name, content):
+    # Pass secrets on stdin; run() logs commands and outputs, never stdin.
+    node(1, "docker", "exec", "-i", f"{prefix}-broker-1", "sh", "-ec",
+         f"umask 077; cat > /tmp/kafka-verify-{name}.properties", data=content)
+
+
+def install_clients():
+    for name, content in client_configs.items():
+        install_private(name, content)
+
+
+def create_account(name):
+    password = secrets.token_hex(24)
+    install_private("account-update", f"SCRAM-SHA-512=iterations=8192,password={password}\n")
+    try:
+        cli("kafka-configs.sh", "--alter", "--entity-type", "users", "--entity-name", name,
+            "--add-config-file", "/tmp/kafka-verify-account-update.properties")
+    finally:
+        node(1, "docker", "exec", f"{prefix}-broker-1", "rm", "-f", "/tmp/kafka-verify-account-update.properties")
+    content = re.sub(r'username="[^"]*" password="[^"]*"',
+                     f'username="{name}" password="{password}"', client_configs["admin"])
+    client_configs[name] = content
+    path = runtime / f"cluster/clients/{name}.properties"
+    with path.open("w") as stream:
+        os.chmod(path, 0o600)
+        stream.write(content)
+    install_private(name, content)
 
 
 def wait_for(label, action, predicate, seconds=120):
@@ -97,7 +137,8 @@ messages = [f"{topic}-message-{i}" for i in range(1, 4)]
 
 def consume(label):
     result = cli("kafka-console-consumer.sh", "--topic", topic, "--from-beginning",
-                 "--group", f"{topic}-{label}", "--max-messages", "3", "--timeout-ms", "30000")
+                 "--group", f"{topic}-{label}", "--max-messages", "3", "--timeout-ms", "30000",
+                 account="hr_consumer" if authentication else "admin")
     assert sorted(result.stdout.splitlines()) == sorted(messages), result.stdout
     checks.append(label)
     print(f"PASS {label}", flush=True)
@@ -118,15 +159,35 @@ try:
             resources.append({"node": index, "role": role, "cpu": cpu / 1e9, "memoryBytes": memory})
     checks.append("test resource limits")
     print("PASS test resource limits", flush=True)
+    if authentication:
+        admin = (runtime / "cluster/clients/admin.properties").read_text()
+        limits = "\ndefault.api.timeout.ms=10000\nrequest.timeout.ms=5000\n"
+        client_configs["admin"] = admin + limits
+        client_configs["wrong"] = re.sub(r'password="[^"]*"', 'password="invalid-password"', admin) + limits
+        client_configs["anonymous"] = "security.protocol=PLAINTEXT\n" + limits
+        install_clients()
     quorum = wait_for("controller quorum", lambda: cli("kafka-metadata-quorum.sh", "describe", "--status", check=False), quorum_ready)
     replication = wait_for("controller replication lag zero", lambda: cli("kafka-metadata-quorum.sh", "describe", "--replication", check=False), replication_ready)
     brokers = wait_for("three brokers registered", lambda: cli("kafka-broker-api-versions.sh", check=False),
                        lambda text: set(re.findall(r"\bid:\s*(\d+)", text)) == {"1", "2", "3"})
+    if authentication:
+        for host in (11, 12, 13):
+            cli("kafka-topics.sh", "--list", target=f"172.30.93.{host}:{client_port}")
+        for account in ("wrong", "anonymous"):
+            denied = cli("kafka-topics.sh", "--list", account=account, check=False)
+            assert denied.returncode != 0, f"unexpected authentication success: {account}"
+            expected = "SaslAuthenticationException" if account == "wrong" else "TimeoutException"
+            assert expected in denied.stdout + denied.stderr
+        cli("kafka-topics.sh", "--list", internal=True)
+        create_account("hr_producer")
+        create_account("hr_consumer")
+        checks.append("all broker authentication endpoints; wrong and anonymous denied; INTERNAL unauthenticated; independent accounts")
+        print("PASS authentication endpoints, negative checks, INTERNAL and independent accounts", flush=True)
     cli("kafka-topics.sh", "--create", "--topic", topic, "--partitions", "3",
         "--replication-factor", "3", "--config", "min.insync.replicas=2")
     description = wait_topic("three partitions with three replicas and ISR 3")
     cli("kafka-console-producer.sh", "--topic", topic, "--producer-property", "acks=all",
-        data="\n".join(messages) + "\n")
+        account="hr_producer" if authentication else "admin", data="\n".join(messages) + "\n")
     consume("produce-consume")
 
     missing = f"{topic}-missing"
@@ -134,7 +195,8 @@ try:
                    "--producer-property", "max.block.ms=3000",
                    "--producer-property", "delivery.timeout.ms=4000",
                    "--producer-property", "request.timeout.ms=2000",
-                   "--producer-property", "retries=0", data="must-not-create\n", check=False)
+                   "--producer-property", "retries=0", data="must-not-create\n", check=False,
+                   account="hr_producer" if authentication else "admin")
     assert "TimeoutException" in negative.stderr + negative.stdout, negative
     assert missing not in cli("kafka-topics.sh", "--list").stdout.splitlines()
     checks.append("automatic topic creation disabled")
@@ -158,6 +220,8 @@ try:
     consume("messages-after-restart")
     deploy(1, "broker", "stop")
     deploy(1, "broker", "start")
+    if authentication:
+        install_clients()
     wait_topic("ISR restored after broker recreation")
     consume("messages-after-recreation")
     for index in (1, 2, 3):
@@ -166,6 +230,7 @@ try:
     result = {"status": "passed", "completedAtUTC": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "topology": "three Docker-in-Docker Linux nodes; not independent VMs",
               "kafkaImage": "apache/kafka:4.3.2", "profile": "test", "topic": topic,
+              "security": manifest.get("security", {}), "bootstrapServers": bootstrap,
               "checks": checks, "resources": resources, "identityChecksums": identities,
               "quorum": quorum, "replication": replication, "brokers": brokers, "topicDescription": description}
     (runtime / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")

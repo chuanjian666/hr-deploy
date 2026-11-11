@@ -4,8 +4,9 @@ controller.quorum.bootstrap.servers={{CONTROLLER_BOOTSTRAP_SERVERS}}
 controller.listener.names=CONTROLLER
 listeners={{LISTENERS}}
 advertised.listeners={{ADVERTISED_LISTENERS}}
-listener.security.protocol.map=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+listener.security.protocol.map=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:{{EXTERNAL_PROTOCOL}}
 inter.broker.listener.name=INTERNAL
+{{AUTH_CONFIG}}
 log.dirs=/var/lib/kafka/data
 
 default.replication.factor=3

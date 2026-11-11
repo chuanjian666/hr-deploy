@@ -16,7 +16,7 @@
 | 生成目录 | `kafka/cluster/nodes/<role>-<序号>-<host>/` |
 | 分发方式 | 默认由管理员人工复制节点包；本轮不实现自动 SSH/scp 分发 |
 | 配置方式 | 管理机配置、节点 `.env`、Kafka properties 三层分离 |
-| 安全模式 | 当前使用 `PLAINTEXT`，不启用账号认证、TLS 或 ACL；仅部署在可信隔离内网 |
+| 安全模式 | 初始化可选客户端 SCRAM 认证；内部通信保持 `PLAINTEXT`，不启用 TLS 或 ACL；仅部署在可信隔离内网 |
 
 默认拓扑如下：
 
@@ -219,13 +219,13 @@ Kafka 角色层面的约束如下：
 | 监听器 | 默认端口 | 作用 |
 | --- | ---: | --- |
 | `CONTROLLER` | 9093 | controller quorum，以及 broker/controller 控制面通信 |
-| `INTERNAL` | 9092 | broker 间复制和内网客户端访问 |
-| `EXTERNAL` | 19092 | 可选，供另一网络中的客户端访问 |
+| `INTERNAL` | 9092 | broker 间复制；关闭认证时也可供内网客户端访问 |
+| `EXTERNAL` | 19092 | 客户端入口；开启认证时自动启用，所有业务客户端均使用此入口 |
 
 监听器规则：
 
 - controller 只监听 `CONTROLLER`。
-- broker 监听 `INTERNAL`，按需增加 `EXTERNAL`，不监听 `CONTROLLER`。
+- broker 监听 `INTERNAL`；开启认证时自动增加 `EXTERNAL`，关闭认证时由 `ENABLE_EXTERNAL_LISTENER` 决定；不监听 `CONTROLLER`。
 - `listeners` 可以绑定 `0.0.0.0`；`advertised.listeners` 不允许填写 `0.0.0.0`、localhost 或客户端无法解析的容器名。
 - `cluster init` 分别采集 SSH 地址、集群内通信地址和客户端 advertised 地址，三者不能混为一个字段。
 - 启用 `EXTERNAL` 时，每个 broker 必须有独立且从客户端网络可达的地址和端口，不能用一个普通四层地址替代所有 broker advertised 地址。
@@ -236,8 +236,8 @@ Kafka 角色层面的约束如下：
 | 来源 | 目标 | 端口 |
 | --- | --- | ---: |
 | 3 个 controller、3 个 broker | 3 个 controller | 9093 |
-| 3 个 broker、controller、内网客户端 | 3 个 broker | 9092 |
-| 指定外部客户端网段 | 3 个 broker | 19092（启用时） |
+| 3 个 broker、controller；关闭认证时可包含授权内网客户端 | 3 个 broker | 9092 |
+| 指定业务客户端和运维网段 | 3 个 broker | 19092（开启认证时必须使用） |
 | 监控系统 | JMX exporter | `cluster init` 指定端口（启用时） |
 
 所有端口只对必要源网段开放。工具不自动修改云安全组、主机防火墙、DNS 或路由。
@@ -385,6 +385,7 @@ broker 初始容量按下式估算：
 | 镜像架构 | 与目标 VM 的 amd64/arm64 匹配；实现时拉取并记录 digest |
 | 分发方式 | 管理员人工复制节点包；不自动连接或修改远端主机 |
 | 部署规格 | 默认 `standard`（8C32G + 512 GB HDD）；可选 `minimal`（4C16G + 512 GB HDD）、`test`（2C4G + 至少 20 GB，仅功能验证）；均默认保留 7 天 |
+| 客户端认证 | `ENABLE_AUTH` 默认 false；开启后确认初始账号、密码和 `EXTERNAL_PORT`，使用 SCRAM-SHA-512，不启用 ACL/TLS |
 | Docker 环境 | Linux、Docker Engine、可访问的 Docker daemon、Compose v2；可使用 `../docker/setup-docker.sh` 准备，由目标机 `check` 最终确认 |
 | 日志 | stdout/stderr，Docker `json-file` 默认 50 MiB × 5 |
 | 时区与 NTP | 3 台 VM 必须时间同步 |
@@ -413,7 +414,7 @@ broker 初始容量按下式估算：
 | --- | --- | --- |
 | 身份 | `process.roles`、`node.id`、cluster ID、directory ID | 工具生成并展示；生成后保持稳定 |
 | 控制面 | `controller.quorum.bootstrap.servers`、`controller.listener.names` | 包含全部 3 个 controller 的真实地址 |
-| 监听器 | `listeners`、`advertised.listeners`、`listener.security.protocol.map` | 所有 listener 当前映射为 `PLAINTEXT`，按逐节点地址生成 |
+| 监听器 | `listeners`、`advertised.listeners`、`listener.security.protocol.map` | INTERNAL/CONTROLLER 固定 `PLAINTEXT`；EXTERNAL 根据认证开关映射 `PLAINTEXT` 或 `SASL_PLAINTEXT` |
 | broker 通信 | `inter.broker.listener.name=INTERNAL` | INTERNAL 使用 `PLAINTEXT` |
 | 数据目录 | `log.dirs`、`metadata.log.dir` | 映射到独立持久目录；broker 元数据也必须持久化 |
 | 默认副本 | `default.replication.factor=3` | 适配 3 broker 集群 |
@@ -438,29 +439,24 @@ broker 初始容量按下式估算：
 
 ### 9.4 访问控制边界
 
-当前所有 listener 使用 `PLAINTEXT`，不启用账号认证、TLS 和 ACL：
+初始化通过 `ENABLE_AUTH` 选择是否启用客户端认证，默认关闭，兼容旧配置。开启时自动启用 EXTERNAL，使用 `SASL_PLAINTEXT + SCRAM-SHA-512`：
 
 ```properties
-listener.security.protocol.map=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+listener.security.protocol.map=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:SASL_PLAINTEXT
+inter.broker.listener.name=INTERNAL
+listener.name.external.sasl.enabled.mechanisms=SCRAM-SHA-512
+listener.name.external.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required;
 ```
 
-同时关闭 Topic 自动创建：
+关闭认证时 EXTERNAL 使用 PLAINTEXT，是否启用由原有开关决定。内部 broker 和 controller 通信始终免认证，不需要内部账号。开启认证后，所有业务客户端（包括同内网客户端）均通过 EXTERNAL 访问，INTERNAL/CONTROLLER 只允许集群节点互访，否则可绕过认证。
 
-```properties
-auto.create.topics.enable=false
-```
+初始账号在 controller 首次格式化时通过 `--add-scram` 写入，已格式化目录不会补写或更新账号。管理机生成独立客户端连接配置（含明文密码，权限 600）；controller 包仅分发派生凭据，broker 包不包含密码。Python 只使用标准库，无额外第三方依赖，目标节点无需 Python。
 
-该配置只阻止 producer 或 consumer 在访问不存在的 Topic 时触发自动创建。管理员仍可通过 `kafka-topics.sh --create` 或 Admin API 显式创建 Topic。
+集群启动后，可通过 Kafka 自带 `kafka-configs.sh` 动态创建独立生产者、消费者账号及修改或删除凭据。ACL 暂不启用，已认证账号权限相同，无法限制仅管理员显式创建、修改或删除 Topic；后续可沿用这些账号配置 ACL。
 
-由于没有认证，Kafka 将这些连接视为同一匿名身份，无法区分管理员和普通客户端。因此，任何能访问 broker listener 的客户端理论上都能显式创建、修改或删除 Topic。当前方案通过以下措施降低风险：
+所有模式均保持 `auto.create.topics.enable=false`。该设置只阻止 producer/consumer 触发自动创建，不阻止 CLI 或 Admin API 显式创建。当前依靠网络隔离、业务操作约束和受控运维流程管理 Topic。
 
-- Kafka 端口仅向明确的 Kafka 节点、业务客户端网段和运维网段开放，不暴露公网；
-- 业务侧不使用 AdminClient 执行集群管理操作；
-- Topic 统一由受控的运维流程显式创建；
-- 监控 Topic 列表和数量变化，发现非计划变更及时告警；
-- `delete.topic.enable` 是否关闭由集群初始化阶段确认。关闭后所有客户端均不能在线删除 Topic。
-
-这些措施属于网络和流程约束，不是 Kafka 内部的权限隔离。如果后续要求由 Kafka 强制保证“只有指定管理员可以创建 Topic”，必须增加账号认证和 ACL。
+完整初始化、账号管理、客户端配置及已有集群切换步骤见 [账号认证说明](authentication.md)。
 
 ## 10. Compose 与容器启动设计
 
@@ -632,7 +628,7 @@ scp -r cluster/nodes/broker-1-<host>/     root@<host>:/root/deploy/kafka/broker-
 
 - 自动修改云安全组、防火墙、DNS、NTP、路由或 registry 权限；
 - 自动创建所有业务 topic，或管理 producer 和 consumer 配置；
-- 在未启用认证和 ACL 时区分管理员与普通客户端；
+- 在未启用 ACL 时限制管理员与普通客户端的操作权限；
 - 自动扩缩 controller/broker 或自动数据重分配；
 - 跨集群复制、灾备集群、MirrorMaker 2；
 - 监控平台和告警平台本身的部署；

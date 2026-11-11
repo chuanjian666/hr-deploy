@@ -1,6 +1,6 @@
 # Kafka 部署工具
 
-用于生成 3 个 KRaft controller 和 3 个 broker 的独立 Docker Compose 节点包。当前配置使用 PLAINTEXT，不启用认证和 ACL，并关闭 Topic 自动创建。
+用于生成 3 个 KRaft controller 和 3 个 broker 的独立 Docker Compose 节点包。支持可选客户端 SCRAM 账号认证，内部通信始终使用 PLAINTEXT，不启用 TLS 和 ACL，并关闭 Topic 自动创建。
 
 ## 基础环境
 
@@ -27,6 +27,10 @@ chmod 600 config/kafka-admin.conf
 ```bash
 ./kafka-admin.sh cluster init
 ```
+
+初始化时可选择 `ENABLE_AUTH=true`，填写初始账号、密码和客户端端口（默认 19092）。开启后所有业务客户端使用 `SASL_PLAINTEXT + SCRAM-SHA-512` 连接该端口；9092/9093 仅允许集群节点互访。管理机需要 Python 3，无需第三方 Python 包；目标节点不需要 Python。
+
+初始凭据仅在 controller 首次格式化时写入。独立生产者/消费者账号可在集群启动后动态创建。配置、账号管理及已有集群切换步骤见 [账号认证说明](docs/authentication.md)。
 
 非交互生成适合自动化和基本测试：
 
@@ -83,4 +87,4 @@ Kafka 默认保留 7 天数据。完整方案见 [docs/plan.md](docs/plan.md)。
 - `cluster validate` 只做静态校验，不拉取镜像、不启动容器。
 - `deploy.sh check` 需要在目标 Linux 节点以 root 执行。
 - Compose 和 storage format 使用 `apache/kafka:4.3.2` 镜像内的 `/opt/kafka/bin` 路径；正式部署前仍应在目标环境确认镜像架构及路径。
-- 没有认证和 ACL 时，Kafka 无法限制只有管理员才能显式创建 Topic。
+- 当前未启用 ACL，即使开启认证也不能限制只有管理员才能显式创建 Topic，各账号权限相同。

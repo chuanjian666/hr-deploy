@@ -12,6 +12,11 @@ CONTROLLER_PORT="9093"
 BROKER_PORT="9092"
 ENABLE_EXTERNAL_LISTENER="false"
 EXTERNAL_PORT="19092"
+# 开启认证时自动启用 EXTERNAL 客户端入口；内部通信始终免认证，不启用 TLS/ACL。
+ENABLE_AUTH="false"
+AUTH_USERNAME="admin"
+# 开启认证时必填，至少 16 位 ASCII 字母、数字或 _@%+=:./-。不要提交真实密码。
+AUTH_PASSWORD=""
 
 TARGET_DEPLOY_ROOT="/root/deploy/kafka"
 DATA_ROOT="/data1/kafka"

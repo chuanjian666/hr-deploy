@@ -25,6 +25,6 @@
 
 ## 需求补充
 
-- 当前部署在可信内网，暂不启用账号认证、SSL/TLS 和 ACL。
+- 当前部署在可信内网；初始化时可选择是否启用客户端 SCRAM-SHA-512 账号认证，默认关闭。开启后使用独立 EXTERNAL 入口（SASL_PLAINTEXT），broker 与 KRaft 内部通信保持免认证。SSL/TLS 不启用，ACL 后续再配置。
 - 设置 `auto.create.topics.enable=false`，关闭 producer/consumer 访问不存在 Topic 时的自动创建。
-- Topic 由管理员通过 Kafka CLI 或 Admin API 显式创建；没有认证时 Kafka 无法阻止其他可访问客户端显式创建 Topic，该限制依赖网络和运维流程。
+- Topic 由管理员通过 Kafka CLI 或 Admin API 显式创建；没有 ACL 时 Kafka 无法阻止其他可访问客户端显式创建 Topic，该限制依赖网络和运维流程。生产者和消费者可分别使用独立账号，后续可沿用账号配置 ACL。

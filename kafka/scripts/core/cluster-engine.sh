@@ -45,6 +45,13 @@ interactive_config() {
     read -r -p "磁盘容量 GB（生产至少 512，test 至少 20）[$EXPECTED_DATA_DISK_GB]: " input; [[ -z "$input" ]] || save_config EXPECTED_DATA_DISK_GB "$input"
     read -r -p "3 个 controller 地址，逗号分隔 [$CONTROLLER_HOSTS]: " input; [[ -z "$input" ]] || save_config CONTROLLER_HOSTS "$input"
     read -r -p "3 个 broker 地址，逗号分隔 [$BROKER_HOSTS]: " input; [[ -z "$input" ]] || save_config BROKER_HOSTS "$input"
+    read -r -p "启用客户端账号认证 true/false [$ENABLE_AUTH]: " input; [[ -z "$input" ]] || save_config ENABLE_AUTH "$input"
+    if [[ "$ENABLE_AUTH" == true ]]; then
+        read -r -p "客户端认证端口 [$EXTERNAL_PORT]: " input; [[ -z "$input" ]] || save_config EXTERNAL_PORT "$input"
+        read -r -p "初始账号 [$AUTH_USERNAME]: " input; [[ -z "$input" ]] || save_config AUTH_USERNAME "$input"
+        read -r -s -p "初始密码（至少 16 位，留空保留已有密码）: " input; echo
+        [[ -z "$input" ]] || save_config AUTH_PASSWORD "$input"
+    fi
     load_config
 }
 
@@ -98,6 +105,7 @@ write_env() {
 KAFKA_IMAGE=$KAFKA_IMAGE
 COMPOSE_PROJECT_NAME=$project
 CONTAINER_NAME=$container
+ENABLE_AUTH=$ENABLE_AUTH
 NODE_ROLE=$role
 DEPLOY_PROFILE=$DEPLOY_PROFILE
 NODE_INDEX=$index
@@ -134,6 +142,9 @@ $env_sha  .env
 $log_sha  config/log4j2.yaml
 $deploy_sha  deploy.sh
 EOF
+    if [[ -f "$dir/config/bootstrap.scram" ]]; then
+        printf '%s  config/bootstrap.scram\n' "$(sha256_file "$dir/config/bootstrap.scram")" >> "$dir/checksums.sha256"
+    fi
     python3 - "$dir/manifest.json" <<PY
 import json
 manifest={
@@ -168,6 +179,10 @@ generate_node() {
     chmod 700 "$dir/deploy.sh"
 
     if [[ "$role" == controller ]]; then
+        if [[ "$ENABLE_AUTH" == true ]]; then
+            cp "$nodes_dir/../bootstrap.scram" "$dir/config/bootstrap.scram"
+            chmod 600 "$dir/config/bootstrap.scram"
+        fi
         render_template "$(script_root)/templates/controller.properties.tmpl" "$dir/config/server.properties" \
             "NODE_ID=$node_id" "CONTROLLER_BOOTSTRAP_SERVERS=$CONTROLLER_BOOTSTRAP_SERVERS" \
             "CONTROLLER_PORT=$CONTROLLER_PORT"
@@ -175,13 +190,19 @@ generate_node() {
     else
         listeners="INTERNAL://0.0.0.0:${BROKER_PORT}"
         advertised="INTERNAL://${host}:${BROKER_PORT}"
-        if [[ "$ENABLE_EXTERNAL_LISTENER" == true ]]; then
+        if [[ "$ENABLE_EXTERNAL_LISTENER" == true || "$ENABLE_AUTH" == true ]]; then
             listeners+=",EXTERNAL://0.0.0.0:${EXTERNAL_PORT}"
             advertised+=",EXTERNAL://${host}:${EXTERNAL_PORT}"
+        fi
+        local external_protocol=PLAINTEXT auth_config=""
+        if [[ "$ENABLE_AUTH" == true ]]; then
+            external_protocol=SASL_PLAINTEXT
+            auth_config=$'listener.name.external.sasl.enabled.mechanisms=SCRAM-SHA-512\nlistener.name.external.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required;'
         fi
         render_template "$(script_root)/templates/broker.properties.tmpl" "$dir/config/server.properties" \
             "NODE_ID=$node_id" "CONTROLLER_BOOTSTRAP_SERVERS=$CONTROLLER_BOOTSTRAP_SERVERS" \
             "LISTENERS=$listeners" "ADVERTISED_LISTENERS=$advertised" \
+            "EXTERNAL_PROTOCOL=$external_protocol" "AUTH_CONFIG=$auth_config" \
             "DELETE_TOPIC_ENABLE=$DELETE_TOPIC_ENABLE" "LOG_RETENTION_HOURS=$LOG_RETENTION_HOURS" \
             "LOG_SEGMENT_BYTES=$LOG_SEGMENT_BYTES" "LOG_ROLL_HOURS=$LOG_ROLL_HOURS" \
             "LOG_RETENTION_CHECK_INTERVAL_MS=$LOG_RETENTION_CHECK_INTERVAL_MS"
@@ -209,6 +230,7 @@ for i, host in enumerate(broker_hosts, 1):
 manifest={
   "manifestVersion": 1,
   "generatedAt": "$generated_at",
+  "security": {"authenticationEnabled": "$ENABLE_AUTH" == "true", "clientPort": int("$EXTERNAL_PORT") if "$ENABLE_AUTH" == "true" or "$ENABLE_EXTERNAL_LISTENER" == "true" else int("$BROKER_PORT"), "clientProtocol": "SASL_PLAINTEXT" if "$ENABLE_AUTH" == "true" else "PLAINTEXT", "aclEnabled": False},
   "cluster": {"name": "$(json_escape "$CLUSTER_NAME")", "id": "$(json_escape "$CLUSTER_ID")"},
   "kafka": {"image": "$(json_escape "$KAFKA_IMAGE")"},
   "profile": "$DEPLOY_PROFILE",
@@ -243,6 +265,19 @@ Kafka 镜像：\`$KAFKA_IMAGE\`
 
 部署包生成不代表目标节点检查或部署已完成。
 EOF
+    if [[ "$ENABLE_AUTH" == true ]]; then
+        cat >> "$output/README.md" <<EOF
+
+客户端入口：各 broker 的 \`$EXTERNAL_PORT\`，协议 SASL_PLAINTEXT，机制 SCRAM-SHA-512。
+管理机 \`clients/admin.properties\` 含明文密码（权限 600），不要复制到全部节点或提交到版本库。
+controller 包仅含派生后的初始凭据；三个 controller 必须使用同一批生成的节点包。
+ACL 暂不启用，所有已认证账号权限相同。内部通信不认证、不加密。
+\`$BROKER_PORT\` 和 \`$CONTROLLER_PORT\` 仅允许集群节点互访，避免绕过认证。
+初始账号仅在 controller 首次 prepare 时写入；重新生成节点包不会更新已有集群账号。
+已有集群开启认证前，先通过受限 INTERNAL 入口创建 SCRAM 账号，再滚动更新 broker。
+账号增删和改密使用 kafka-configs.sh，不得删除数据目录重新格式化。详见源码 kafka/docs/authentication.md。
+EOF
+    fi
     if [[ "$DEPLOY_PROFILE" == test ]]; then
         cat >> "$output/README.md" <<EOF
 
@@ -281,6 +316,10 @@ cluster_init() {
     root="$(script_root)"; output="$(cluster_dir)"; ensure_dir "$(dirname "$output")"; staging="$(mktemp -d "$(dirname "$output")/.cluster.tmp.XXXXXX")"
     trap '[[ -z "${staging:-}" || ! -e "$staging" ]] || rm -rf "$staging"' EXIT
     mkdir -p "$staging/nodes"
+    if [[ "$ENABLE_AUTH" == true ]]; then
+        AUTH_USERNAME="$AUTH_USERNAME" AUTH_PASSWORD="$AUTH_PASSWORD" python3 "$(script_root)/scripts/core/generate-auth.py" "$staging" "$output" "$BROKER_HOSTS" "$EXTERNAL_PORT"
+        log_warn "认证已启用：客户端必须使用 ${EXTERNAL_PORT}；请限制 ${BROKER_PORT}/${CONTROLLER_PORT} 只允许集群节点访问"
+    fi
     for ((i=1; i<=3; i++)); do
         generate_node "$staging/nodes" controller "$i" "${controller_hosts[$((i-1))]}"
         generate_node "$staging/nodes" broker "$i" "${broker_hosts[$((i-1))]}"
