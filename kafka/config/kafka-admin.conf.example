@@ -1,8 +1,13 @@
-# Kafka 集群初始化配置。复制为 kafka-admin.conf 后可直接编辑或执行 cluster init 交互修改。
+# Kafka 集群初始化配置。cluster init 首次运行时自动创建 kafka-admin.conf 并交互采集配置。
 CLUSTER_NAME="hr-kafka"
 KAFKA_IMAGE="apache/kafka:4.3.2"
-# standard / minimal 为生产规格；test 仅本地 3 节点功能验证（2C4G/台）。
+# standard / minimal 为生产规格；manual 按角色指定容器资源。
 DEPLOY_PROFILE="standard"
+# 仅 manual 必填。CPU 以核为单位，内存使用整数 MiB（如 768m）或 GiB（如 2g）。
+MANUAL_CONTROLLER_CPU=""
+MANUAL_CONTROLLER_MEMORY=""
+MANUAL_BROKER_CPU=""
+MANUAL_BROKER_MEMORY=""
 
 # 3 个 controller 与 3 个 broker，按序号一一共置时可填写相同地址。
 CONTROLLER_HOSTS=""
@@ -15,14 +20,15 @@ EXTERNAL_PORT="19092"
 # 开启认证时自动启用 EXTERNAL 客户端入口；内部通信始终免认证，不启用 TLS/ACL。
 ENABLE_AUTH="false"
 AUTH_USERNAME="admin"
-# 开启认证时必填，至少 16 位 ASCII 字母、数字或 _@%+=:./-。不要提交真实密码。
+# 首次 cluster init 时留空自动生成 6 位随机密码并保存；已有配置则沿用，不自动轮换。
+# 手动指定不限制长度，使用 ASCII 字母、数字或 _@%+=:./-。不要提交真实密码。
 AUTH_PASSWORD=""
 
 TARGET_DEPLOY_ROOT="/root/deploy/kafka"
-DATA_ROOT="/data1/kafka"
-DOCKER_DATA_ROOT="/data1/docker"
-EXPECTED_DATA_DISK_GB="512"
-# 使用 test 时同时将 EXPECTED_DATA_DISK_GB 改为 20；允许系统盘，无需独立数据盘。
+# 各角色数据目录的公共基础目录；脚本自动识别所在文件系统，无需配置挂载点。
+KAFKA_DATA_BASE_DIR="/data1/kafka"
+# 规格仅约束 CPU、内存和 heap；磁盘容量按实际业务规划，不设置固定容量门槛。
+# manual 允许系统盘目录；生产规格仍要求数据位于独立挂载的文件系统。
 
 LOG_RETENTION_HOURS="168"
 LOG_SEGMENT_BYTES="1073741824"

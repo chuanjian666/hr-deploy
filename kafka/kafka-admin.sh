@@ -30,6 +30,7 @@ Kafka Admin CLI v$VERSION
   $0 version
 
 目标节点收到角色包后使用 ./deploy.sh check|prepare|start|stop|restart|status|logs。
+controller 包另支持 ./deploy.sh health [等待秒数] 检查 controller 集群健康。
 EOF
 }
 

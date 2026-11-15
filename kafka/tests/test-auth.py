@@ -57,8 +57,11 @@ def main():
         config.write_text((ROOT / "config/kafka-admin.conf.example").read_text() + '''
 CONTROLLER_HOSTS="controller-1,controller-2,controller-3"
 BROKER_HOSTS="broker-1,broker-2,broker-3"
-DEPLOY_PROFILE="test"
-EXPECTED_DATA_DISK_GB="20"
+DEPLOY_PROFILE="manual"
+MANUAL_CONTROLLER_CPU=0.5
+MANUAL_CONTROLLER_MEMORY=512m
+MANUAL_BROKER_CPU=1
+MANUAL_BROKER_MEMORY=1536m
 ENABLE_AUTH="true"
 AUTH_PASSWORD="Auth-Smoke-Password_2026"
 ''')

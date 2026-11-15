@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Functional checks only; run against the isolated test-local.sh deployment."""
 import datetime
+from decimal import Decimal
 import json
 import os
 import pathlib
@@ -12,8 +13,9 @@ import time
 
 runtime = pathlib.Path(sys.argv[1])
 logs = runtime / "logs"
-prefix = "hr-kafka-local-test"
-manifest = json.loads((runtime / "cluster/manifest.json").read_text())
+cluster_dir = pathlib.Path(sys.argv[2])
+manifest = json.loads((cluster_dir / "manifest.json").read_text())
+prefix = manifest["cluster"]["name"]
 authentication = manifest.get("security", {}).get("authenticationEnabled", False)
 client_port = manifest.get("security", {}).get("clientPort", 9092)
 bootstrap = ",".join(f"172.30.93.{i}:{client_port}" for i in (11, 12, 13))
@@ -40,16 +42,16 @@ def run(args, *, data=None, check=True, timeout=60):
 
 
 def node(index, *args, **kwargs):
-    return run(["docker", "exec", "-i", f"{prefix}-node-{index}-1", *args], **kwargs)
+    return run(["docker", "exec", "-i", f"hr-kafka-local-test-node-{index}-1", *args], **kwargs)
 
 
 def deploy(index, role, command, **kwargs):
-    return node(index, "bash", f"/root/deploy/kafka/{role}-{index}/deploy.sh", command, **kwargs)
+    return node(index, "bash", f"/root/deploy/kafka/{role}/deploy.sh", command, **kwargs)
 
 
 def cli(tool, *args, account="admin", internal=False, target=None, **kwargs):
     options = ["--command-config", f"/tmp/kafka-verify-{account}.properties"] if authentication and not internal and account else []
-    endpoint = target or ("172.30.93.11:9092" if internal else bootstrap)
+    endpoint = target or (f"172.30.93.11:{manifest['brokers'][0]['port']}" if internal else bootstrap)
     return node(1, "docker", "exec", "-i", "-e", "KAFKA_HEAP_OPTS=-Xms128m -Xmx256m",
                 "-e", "KAFKA_LOG4J_OPTS=-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml",
                 f"{prefix}-broker-1", f"/opt/kafka/bin/{tool}",
@@ -78,7 +80,7 @@ def create_account(name):
     content = re.sub(r'username="[^"]*" password="[^"]*"',
                      f'username="{name}" password="{password}"', client_configs["admin"])
     client_configs[name] = content
-    path = runtime / f"cluster/clients/{name}.properties"
+    path = cluster_dir / f"clients/{name}.properties"
     with path.open("w") as stream:
         os.chmod(path, 0o600)
         stream.write(content)
@@ -147,11 +149,13 @@ def consume(label):
 try:
     resources = []
     for index in (1, 2, 3):
-        outer = json.loads(run(["docker", "inspect", f"{prefix}-node-{index}-1"]).stdout)[0]
+        outer = json.loads(run(["docker", "inspect", f"hr-kafka-local-test-node-{index}-1"]).stdout)[0]
         assert outer["HostConfig"]["NanoCpus"] == 2_000_000_000
         assert outer["HostConfig"]["Memory"] == 4 * 1024**3
-        for role, cpu, memory in (("controller", 500_000_000, 512 * 1024**2),
-                                  ("broker", 1_000_000_000, 1536 * 1024**2)):
+        for role in ("controller", "broker"):
+            limits = manifest["resources"][role]
+            cpu = int(Decimal(limits["cpu"]) * 10**9)
+            memory = limits["memoryMiB"] * 1024**2
             info = json.loads(node(index, "docker", "inspect", f"{prefix}-{role}-{index}").stdout)[0]
             assert info["HostConfig"]["NanoCpus"] == cpu
             assert info["HostConfig"]["Memory"] == memory
@@ -160,7 +164,7 @@ try:
     checks.append("test resource limits")
     print("PASS test resource limits", flush=True)
     if authentication:
-        admin = (runtime / "cluster/clients/admin.properties").read_text()
+        admin = (cluster_dir / "clients/admin.properties").read_text()
         limits = "\ndefault.api.timeout.ms=10000\nrequest.timeout.ms=5000\n"
         client_configs["admin"] = admin + limits
         client_configs["wrong"] = re.sub(r'password="[^"]*"', 'password="invalid-password"', admin) + limits
@@ -205,7 +209,8 @@ try:
     identities = {}
     for index in (1, 2, 3):
         for role, leaf in (("controller", "metadata"), ("broker", "data")):
-            path = f"/data1/kafka/{role}-{index}/{leaf}/meta.properties"
+            base_dir = manifest['paths']['dataBaseDir']
+            path = f"{base_dir}/{role}/{leaf}/meta.properties"
             before = node(index, "sha256sum", path).stdout
             prepared = deploy(index, role, "prepare")
             assert "身份一致，跳过" in prepared.stdout
@@ -229,7 +234,7 @@ try:
         assert all(item["State"]["Running"] and not item["State"]["OOMKilled"] for item in info)
     result = {"status": "passed", "completedAtUTC": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "topology": "three Docker-in-Docker Linux nodes; not independent VMs",
-              "kafkaImage": "apache/kafka:4.3.2", "profile": "test", "topic": topic,
+              "kafkaImage": manifest["kafka"]["image"], "profile": manifest["profile"], "topic": topic,
               "security": manifest.get("security", {}), "bootstrapServers": bootstrap,
               "checks": checks, "resources": resources, "identityChecksums": identities,
               "quorum": quorum, "replication": replication, "brokers": brokers, "topicDescription": description}

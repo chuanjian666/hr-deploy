@@ -17,7 +17,8 @@ validate_port() {
 validate_uint() { [[ "$2" =~ ^[0-9]+$ ]] || die "$1 必须是非负整数"; }
 validate_boolean() { [[ "$2" == true || "$2" == false ]] || die "$1 必须是 true 或 false"; }
 validate_absolute_path() {
-    [[ "$2" == /* && "$2" != "/" && "$2" != *[[:space:]]* ]] || die "$1 必须是无空格的非根绝对路径: $2"
+    [[ "$2" =~ ^/[a-zA-Z0-9/._-]+$ && "$2" != */ && "$2" != *//* && "/${2#/}/" != */./* && "/${2#/}/" != */../* ]] || \
+        die "$1 必须是规范的非根绝对路径，仅支持 ASCII 字母、数字、/._-，不含末尾斜杠或 .、.. 路径段: $2"
 }
 validate_host() {
     local name="$1" value="$2" label octet
@@ -44,10 +45,41 @@ parse_hosts() {
     for item in "${PARSED_HOSTS[@]}"; do validate_host "$name" "$item"; done
 }
 
+memory_mib() {
+    local size="${1%?}"
+    case "$1" in
+        *[gG]) echo "$((size * 1024))" ;;
+        *) echo "$size" ;;
+    esac
+}
+
+valid_manual_resource() {
+    local key="$1" value="$2"
+    case "$key" in
+        *_CPU)
+            [[ "$value" =~ ^(0|[1-9][0-9]{0,8})([.][0-9]{1,9})?$ ]] &&
+                LC_ALL=C awk -v cpu="$value" 'BEGIN { exit !(cpu >= 0.01) }'
+            ;;
+        *_MEMORY)
+            [[ "$value" =~ ^[1-9][0-9]{0,8}[mMgG]$ ]] && (( $(memory_mib "$value") >= 6 ))
+            ;;
+    esac
+}
+
 validate_cluster_config() {
     validate_name CLUSTER_NAME "$CLUSTER_NAME"
     validate_image KAFKA_IMAGE "$KAFKA_IMAGE"
-    [[ "$DEPLOY_PROFILE" == standard || "$DEPLOY_PROFILE" == minimal || "$DEPLOY_PROFILE" == test ]] || die "DEPLOY_PROFILE 必须是 standard、minimal 或 test"
+    case "$DEPLOY_PROFILE" in
+        standard|minimal) ;;
+        manual)
+            local key
+            for key in MANUAL_CONTROLLER_CPU MANUAL_CONTROLLER_MEMORY MANUAL_BROKER_CPU MANUAL_BROKER_MEMORY; do
+                valid_manual_resource "$key" "${!key:-}" || die "请填写有效的 $key（CPU 至少 0.01 核，内存如 512m 或 2g，至少 6 MiB）"
+            done
+            ;;
+        test) die "test 已改为 manual，请运行交互式 cluster init 输入两个角色的 CPU 和内存" ;;
+        *) die "DEPLOY_PROFILE 必须是 standard、minimal 或 manual" ;;
+    esac
     parse_hosts CONTROLLER_HOSTS "$CONTROLLER_HOSTS"; local controllers=("${PARSED_HOSTS[@]}")
     parse_hosts BROKER_HOSTS "$BROKER_HOSTS"; local brokers=("${PARSED_HOSTS[@]}")
     validate_port CONTROLLER_PORT "$CONTROLLER_PORT"
@@ -58,24 +90,14 @@ validate_cluster_config() {
     validate_boolean ENABLE_AUTH "$ENABLE_AUTH"
     if [[ "$ENABLE_AUTH" == true ]]; then
         validate_name AUTH_USERNAME "$AUTH_USERNAME"
-        [[ ${#AUTH_PASSWORD} -ge 16 && "$AUTH_PASSWORD" =~ ^[a-zA-Z0-9_@%+=:./-]+$ ]] || die "AUTH_PASSWORD 必须至少 16 位，仅支持 ASCII 字母、数字或 _@%+=:./-"
+        [[ "$AUTH_PASSWORD" =~ ^[a-zA-Z0-9_@%+=:./-]+$ ]] || die "AUTH_PASSWORD 不能为空，仅支持 ASCII 字母、数字或 _@%+=:./-"
     fi
     if [[ "$ENABLE_EXTERNAL_LISTENER" == true || "$ENABLE_AUTH" == true ]]; then
         [[ "$EXTERNAL_PORT" != "$CONTROLLER_PORT" && "$EXTERNAL_PORT" != "$BROKER_PORT" ]] || die "EXTERNAL_PORT 不能与其他端口相同"
     fi
     validate_absolute_path TARGET_DEPLOY_ROOT "$TARGET_DEPLOY_ROOT"
-    validate_absolute_path DATA_ROOT "$DATA_ROOT"
-    validate_absolute_path DOCKER_DATA_ROOT "$DOCKER_DATA_ROOT"
+    validate_absolute_path KAFKA_DATA_BASE_DIR "$KAFKA_DATA_BASE_DIR"
     [[ "$TARGET_DEPLOY_ROOT" == /root/deploy/kafka ]] || die "TARGET_DEPLOY_ROOT 当前固定为 /root/deploy/kafka"
-    [[ "$DATA_ROOT" == /data1/kafka ]] || die "DATA_ROOT 当前固定为 /data1/kafka"
-    [[ "$DOCKER_DATA_ROOT" == /data1/docker ]] || die "DOCKER_DATA_ROOT 当前固定为 /data1/docker"
-    validate_uint EXPECTED_DATA_DISK_GB "$EXPECTED_DATA_DISK_GB"
-    if [[ "$DEPLOY_PROFILE" == test ]]; then
-        (( EXPECTED_DATA_DISK_GB >= 20 )) || die "test 规格 EXPECTED_DATA_DISK_GB 不能小于 20"
-        log_warn "test 规格仅用于本地 3 节点部署脚本和 Kafka 功能验证，不用于生产或性能测试"
-    else
-        (( EXPECTED_DATA_DISK_GB >= 512 )) || die "生产规格 EXPECTED_DATA_DISK_GB 不能小于 512"
-    fi
     validate_uint LOG_RETENTION_HOURS "$LOG_RETENTION_HOURS"
     validate_uint LOG_SEGMENT_BYTES "$LOG_SEGMENT_BYTES"
     validate_uint LOG_ROLL_HOURS "$LOG_ROLL_HOURS"

@@ -104,7 +104,7 @@ print_success()  { echo -e "${GREEN}[✓]${NC} $1"; }
 get_input() {
     local prompt="$1" default="$2" var_name="$3"
     if [ "$NON_INTERACTIVE" = true ]; then
-        eval "$var_name='$default'"
+        printf -v "$var_name" '%s' "$default"
         return
     fi
     if [ -n "$default" ]; then
@@ -113,7 +113,15 @@ get_input() {
     else
         read -p "$(echo -e "${BLUE}[?]${NC} $prompt: ")" value
     fi
-    eval "$var_name='$value'"
+    printf -v "$var_name" '%s' "$value"
+}
+
+validate_data_root() {
+    local storage_path="$1"
+    if [[ ! "$storage_path" =~ ^/[a-zA-Z0-9/._-]+$ || "$storage_path" == */ || "$storage_path" == *//* || "/${storage_path#/}/" == */./* || "/${storage_path#/}/" == */../* ]]; then
+        print_error "Docker data-root 必须是规范的非根绝对路径，仅支持 ASCII 字母、数字、/._-，不含末尾斜杠或 .、.. 路径段"
+        exit 1
+    fi
 }
 
 check_root() {
@@ -265,6 +273,7 @@ configure_docker() {
     else
         get_input "Docker data root directory" "/data1/docker" DOCKER_DATA_ROOT
     fi
+    validate_data_root "$DOCKER_DATA_ROOT"
 
     if [ -n "$CUSTOM_LOG_MAX_SIZE" ]; then
         LOG_MAX_SIZE="$CUSTOM_LOG_MAX_SIZE"
@@ -340,6 +349,10 @@ main() {
     print_info "========================================="
     echo ""
 
+    # Reject malformed CLI paths before installing packages or changing services.
+    if [ -n "$CUSTOM_DATA_ROOT" ]; then
+        validate_data_root "$CUSTOM_DATA_ROOT"
+    fi
     check_root
     detect_os
 

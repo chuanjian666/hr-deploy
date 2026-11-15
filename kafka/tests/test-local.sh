@@ -5,24 +5,26 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME="$ROOT/generated/local-test"
 mkdir -p "$RUNTIME/logs"
-export KAFKA_CONFIG_FILE="$RUNTIME/kafka-admin.conf"
-export KAFKA_CLUSTER_DIR="$RUNTIME/cluster"
-export KAFKA_INTERACTIVE=false
+CLUSTER_DIR="${KAFKA_CLUSTER_DIR:-$ROOT/cluster}"
 
 nodes() { docker compose -f "$ROOT/tests/local/docker-compose.yml" "$@"; }
 node() { local index="$1"; shift; docker exec -i "hr-kafka-local-test-node-$index-1" "$@"; }
-deploy() { local index="$1" role="$2"; shift 2; node "$index" bash "/root/deploy/kafka/$role-$index/deploy.sh" "$@"; }
+deploy() { local index="$1" role="$2"; shift 2; node "$index" bash "/root/deploy/kafka/$role/deploy.sh" "$@"; }
 
-generate() {
-    [[ -f "$KAFKA_CONFIG_FILE" ]] || cp "$ROOT/config/kafka-admin.conf.example" "$KAFKA_CONFIG_FILE"
-    chmod 600 "$KAFKA_CONFIG_FILE"
-    "$ROOT/kafka-admin.sh" config set CLUSTER_NAME hr-kafka-local-test
-    "$ROOT/kafka-admin.sh" config set DEPLOY_PROFILE test
-    "$ROOT/kafka-admin.sh" config set EXPECTED_DATA_DISK_GB 20
-    "$ROOT/kafka-admin.sh" config set CONTROLLER_HOSTS 172.30.93.11,172.30.93.12,172.30.93.13
-    "$ROOT/kafka-admin.sh" config set BROKER_HOSTS 172.30.93.11,172.30.93.12,172.30.93.13
-    "$ROOT/kafka-admin.sh" cluster init
-    "$ROOT/kafka-admin.sh" cluster validate
+# Read the packages produced by cluster init without changing the active cluster.
+local_image() {
+    [[ -f "$CLUSTER_DIR/manifest.json" ]] || { echo "请先执行 ./kafka-admin.sh cluster init 并选择 manual 规格" >&2; return 1; }
+    python3 - "$CLUSTER_DIR/manifest.json" <<'PYTHON'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    manifest = json.load(stream)
+hosts = [f"172.30.93.{i}" for i in (11, 12, 13)]
+if manifest["profile"] != "manual" or any(
+    [node["host"] for node in manifest[role]] != hosts for role in ("controllers", "brokers")
+):
+    sys.exit("本地模拟节点需要 manual 规格，controller 和 broker 地址均依次为 " + ",".join(hosts))
+print(manifest["kafka"]["image"])
+PYTHON
 }
 
 distribute() {
@@ -30,9 +32,9 @@ distribute() {
     for index in 1 2 3; do
         node "$index" mkdir -p /root/deploy/kafka
         for role in controller broker; do
-            node "$index" mkdir -p "/root/deploy/kafka/$role-$index"
-            docker cp "$KAFKA_CLUSTER_DIR/nodes/$role-$index-172.30.93.$((10+index))/." \
-                "hr-kafka-local-test-node-$index-1:/root/deploy/kafka/$role-$index/"
+            node "$index" mkdir -p "/root/deploy/kafka/$role"
+            docker cp "$CLUSTER_DIR/nodes/$role-$index-172.30.93.$((10+index))/." \
+                "hr-kafka-local-test-node-$index-1:/root/deploy/kafka/$role/"
         done
     done
 }
@@ -46,8 +48,9 @@ esac
 
 case "$command" in
     up)
-        generate
-        docker image inspect apache/kafka:4.3.2 >/dev/null 2>&1 || docker pull apache/kafka:4.3.2
+        image="$(local_image)"
+        "$ROOT/kafka-admin.sh" cluster validate
+        docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image"
         nodes up -d --build
         for index in 1 2 3; do
             ready=false
@@ -57,25 +60,29 @@ case "$command" in
             done
             [[ "$ready" == true ]] || { nodes logs --tail 60; exit 1; }
             # Import the same cached image into each daemon, avoiding registry/tag differences.
-            docker save apache/kafka:4.3.2 | node "$index" docker load
+            docker save "$image" | node "$index" docker load
             node "$index" docker info --format 'root={{.DockerRootDir}} architecture={{.Architecture}}'
             node "$index" df -h /data1
         done
         distribute
         ;;
     prepare)
-        generate
+        local_image >/dev/null
+        "$ROOT/kafka-admin.sh" cluster validate
         distribute
         for role in controller broker; do
             for index in 1 2 3; do deploy "$index" "$role" check; deploy "$index" "$role" prepare; done
         done
         ;;
     start)
-        for role in controller broker; do
-            for index in 1 2 3; do deploy "$index" "$role" start; done
-        done
+        for index in 1 2 3; do deploy "$index" controller start; done
+        deploy 1 controller health 120
+        for index in 1 2 3; do deploy "$index" broker start; done
         ;;
-    verify) python3 "$ROOT/tests/local/verify.py" "$RUNTIME" ;;
+    verify)
+        local_image >/dev/null
+        python3 "$ROOT/tests/local/verify.py" "$RUNTIME" "$CLUSTER_DIR"
+        ;;
     stop)
         for role in broker controller; do
             for index in 1 2 3; do deploy "$index" "$role" stop; done

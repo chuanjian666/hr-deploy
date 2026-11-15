@@ -1,13 +1,13 @@
 # Kafka 集群部署方案
 
-本文依据 [spec.md](spec.md) 说明 Kafka 集群的部署结构、配置项、操作流程和验收标准。管理机初始化和节点部署脚本已经按本方案实现；已完成静态校验及 `test` 档在本地 3 个隔离 Linux 节点中的实际部署和功能验证，详见 [验证记录](local-test.md#验证记录)。尚未完成三台独立 VM 或生产验收。
+本文依据 [spec.md](spec.md) 说明部署结构、配置项、操作流程和验收标准。本地执行目录约定见 [variables.md](variables.md)，功能验证要求见 [local-test.md](local-test.md)。实际环境和验收结果由执行人员另行记录，本文不包含部署实例。
 
 ## 1. 设计结论
 
 | 项目 | 方案 |
 | --- | --- |
 | 部署目标 | 3 个 broker + 3 个 controller，共 6 个独立 Kafka 进程 |
-| 默认拓扑 | 3 台 Linux VM，每台共置 1 个 controller 和 1 个 broker；生产规格 8C32G / 4C16G，测试规格 2C4G |
+| 默认拓扑 | 3 台 Linux VM，每台共置 1 个 controller 和 1 个 broker；预设规格 8C32G / 4C16G，也可手动指定角色资源 |
 | 角色模型 | KRaft，controller 与 broker 分离，不使用 combined role |
 | 部署方式 | Docker Compose v2，默认使用 host 网络 |
 | 默认镜像 | `apache/kafka:4.3.2`，允许在集群初始化（`cluster init`）阶段替换完整镜像地址 |
@@ -84,7 +84,7 @@ Kafka 角色层面的约束如下：
     └── cluster/                           # 生成内容，整体 Git 忽略
         ├── manifest.json                   # 集群身份和生成版本；权限 0600
         ├── topology.csv                   # 角色、node ID、地址与包目录映射
-        ├── README.md                      # 本次部署的准确操作顺序
+        ├── README.md                      # 通用操作顺序和配置入口
         └── nodes/
             ├── controller-1-<host>/
             ├── controller-2-<host>/
@@ -137,6 +137,7 @@ Kafka 角色层面的约束如下：
 ./deploy.sh restart
 ./deploy.sh status
 ./deploy.sh logs
+./deploy.sh health [等待秒数]          # 仅 controller：检查集群身份、三个入口、leader 和复制
 ```
 
 不带参数时只显示帮助，不自动执行 `prepare` 或 `start`。这一点避免误复制节点包后直接改写已有数据目录。
@@ -250,13 +251,11 @@ Kafka 角色层面的约束如下：
 
 | 规格 | 单台 VM | 每台数据盘 | 适用范围 | 使用要求 |
 | --- | --- | --- | --- | --- |
-| 标准 `standard` | 8 vCPU / 32 GiB | 512 GB HDD | 默认生产规格 | 适用于 HR 内部消息队列的常规负载，仍需观察实际吞吐、分区和磁盘时延 |
-| 最小 `minimal` | 4 vCPU / 16 GiB | 512 GB HDD | 低吞吐、较少 topic 和分区的小型生产集群 | 严格控制同机其他服务，并在上线前完成容量压测和单节点故障测试 |
-| 测试 `test` | 2 vCPU / 4 GiB | 至少 20 GB，可与系统盘共用 | 仅本地 3 节点部署脚本及 Kafka 功能验证 | 每台共置 1 controller + 1 broker；仅少量消息，不用于生产，不做性能测试 |
+| 标准 `standard` | 8 vCPU / 32 GiB | 按需规划，独立挂载 | 默认生产规格 | 适用于 HR 内部消息队列的常规负载，仍需观察实际吞吐、分区和磁盘时延 |
+| 最小 `minimal` | 4 vCPU / 16 GiB | 按需规划，独立挂载 | 低吞吐、较少 topic 和分区的小型生产集群 | 严格控制同机其他服务，并在上线前完成容量压测和单节点故障测试 |
+| 手动 `manual` | 按实际资源 | 按需规划，可与系统盘共用 | 自定义容器资源 | 初始化时分别输入 controller 和 broker 的 CPU、内存 |
 
-本方案提供以上三个固定档位，不在集群初始化阶段提供 `custom` 规格。默认仍为 `standard`，测试档必须显式选择 `test` 并设置 `EXPECTED_DATA_DISK_GB=20`。实际资源不符合任一档位时，应先重新评估并修改方案，而不是绕过校验。
-
-低于单台 4C16G 的 controller/broker 共置节点不定义为生产规格。`test` 是无吞吐要求的功能验证预算，已在 3 个隔离 Linux 节点中验证基础功能，不能据此推断任何生产容量或独立 VM 的故障隔离行为。
+默认规格为 `standard`。选择 `manual` 后必须显式输入四项资源，三台相同角色使用相同的上限。controller 的 JVM heap 取内存的二分之一，broker 取三分之一，向下取整到 MiB。
 
 ### 8.2 角色资源分配
 
@@ -278,7 +277,7 @@ Kafka 角色层面的约束如下：
 
 这些数值是容器上限和初始预算，不是吞吐保证。broker 依赖文件页缓存，不能把容器内存全部分给 JVM。最小规格中 broker 保留约 6 GiB 给堆外内存、线程和页缓存；如果同机还运行采集器、数据库或其他数据服务，则应使用标准规格。
 
-测试规格（每台 VM）：
+本地功能验证的手动输入示例（每台 VM）：
 
 | 用途 | CPU limit | memory limit | JVM heap |
 | --- | ---: | ---: | ---: |
@@ -286,17 +285,17 @@ Kafka 角色层面的约束如下：
 | broker | 1 vCPU | 1536 MiB | 512 MiB |
 | OS、Docker 和临时 CLI 余量 | 0.5 vCPU | 2 GiB | — |
 
-3 台测试 VM 合计 6 vCPU / 12 GiB 内存 / 至少 60 GB 磁盘，宿主机另外保留自身资源。临时 Kafka CLI 使用 128–256 MiB heap，避免与 broker 争抢内存。保留 controller/broker 分离、3 副本和 min ISR 2，不以合并角色或降低副本数节省资源。
+3 台测试 VM 合计 6 vCPU / 12 GiB 内存，磁盘按需规划，宿主机另外保留自身资源。临时 Kafka CLI 使用 128–256 MiB heap，避免与 broker 争抢内存。保留 controller/broker 分离、3 副本和 min ISR 2，不以合并角色或降低副本数节省资源。
 
 角色拆分到独立 VM 时，不能机械沿用共置节点的总规格。应按角色工作量重新评估；controller 的资源主要受 broker 数量、topic/分区规模及元数据变更频率影响，broker 的资源主要受吞吐、连接数、分区副本和磁盘性能影响。
 
 ### 8.3 运行和校验规则
 
-Compose 使用 `cpus`、`mem_limit` 和 `ulimits.nofile`。初始 `nofile` 建议 100000；目标机 `check` 同时检查时间同步、磁盘挂载、剩余空间、文件系统权限和 Docker data-root 空间。
+Compose 使用 `cpus`、`mem_limit` 和 `ulimits.nofile`。初始 `nofile` 建议 100000；目标机 `check` 同时检查时间同步、磁盘挂载、剩余空间、文件系统权限；Docker 存储目录的配置及容量规划由 Docker 部署和运维负责。
 
-选择最小生产规格时，上线前需额外确认：预期峰值吞吐、topic 数、总分区数、平均消息大小、客户端连接数、保留时间和数据盘性能。工具不能在没有基准测试的情况下判定容量一定充足。`test` 不做这些容量和性能验收，只执行基础功能验证。
+选择最小生产规格时，上线前需额外确认：预期峰值吞吐、topic 数、总分区数、平均消息大小、客户端连接数、保留时间和数据盘性能。工具不能在没有基准测试的情况下判定容量一定充足。本地模拟节点不做这些容量和性能验收，只执行基础功能验证。
 
-`test` 的节点检查允许 `/data1` 是普通目录，Docker data-root 仍为 `/data1/docker`；所在文件系统需至少 20 GB 容量（允许 1 GB 容量取整误差）和 5 GB 可用空间。目录、身份和文件摘要校验继续执行。`standard` / `minimal` 继续要求 `/data1` 独立挂载、Docker data-root 为 `/data1/docker`、至少 512 GB 数据盘。
+`manual` 的节点检查允许 `KAFKA_DATA_BASE_DIR`（默认 `/data1/kafka`）使用系统盘目录；所在文件系统保留至少 5 GB 可用空间作为功能测试的启动保护，不设置总容量下限。目录、身份和文件摘要校验继续执行。`standard` / `minimal` 要求数据位于独立挂载的文件系统，挂载点由 `findmnt -T` 根据数据路径自动识别；不设置总容量下限。
 
 最小规格上线前至少验证：
 
@@ -308,58 +307,58 @@ Compose 使用 `cpus`、`mem_limit` 和 `ulimits.nofile`。初始 `nofile` 建�
 
 ### 8.4 存储规划
 
-两个生产规格均默认每台 VM 只配置一块 512 GB HDD，挂载到 `/data1`。Docker data-root 和 Kafka 持久化数据使用这块盘，通过子目录隔离；Kafka 部署包、Compose 和配置放在系统盘 `/root/deploy/kafka`。HDD 适用于当前 HR 内部系统消息队列的低吞吐场景，不建议再在该盘上运行数据库等高 I/O 服务。`test` 可直接使用至少 20 GB 的 VM 系统盘，手动创建 `/data1` 即可，保留相同 Kafka 目录布局；只保留少量测试消息，不代表可存储 7 天业务流量。
+两个生产规格的数据盘容量及介质均按业务规划，独立挂载，不绑定固定大小。只需通过 `KAFKA_DATA_BASE_DIR` 配置 Kafka 数据基础目录，挂载点由脚本自动识别。Docker data-root 通过其安装脚本独立指定，可与 Kafka 位于不同盘；默认同盘时通过子目录隔离；Kafka 部署包、Compose 和配置放在系统盘 `/root/deploy/kafka`。HDD 适用于当前 HR 内部系统消息队列的低吞吐场景，不建议再在该盘上运行数据库等高 I/O 服务。`manual` 可直接使用按需规划的 VM 系统盘，手动创建 `/data1` 即可，保留相同 Kafka 目录布局；只保留少量测试消息，不代表可存储 7 天业务流量。
 
-生产默认存储参数（`test` 除磁盘门槛和挂载要求外沿用相同 Kafka 默认参数）：
+生产默认存储参数（`manual` 除可用空间保护和挂载要求外沿用相同 Kafka 默认参数）：
 
 | 项目 | 默认值 |
 | --- | --- |
-| 单节点数据盘 | 512 GB HDD |
+| 单节点数据盘 | 容量和介质按业务规划 |
 | 文件系统 | XFS 或 ext4 |
-| 挂载点 | `/data1`，供 Docker 和 Kafka 持久化数据共同使用 |
-| Docker data-root | `/data1/docker` |
+| Kafka 数据盘挂载点 | 根据数据基础目录自动识别，不单独配置 |
+| Docker data-root | 默认 `/data1/docker`，仅由 Docker 部署脚本配置；Kafka 不配置或校验其路径 |
 | Kafka 部署根目录 | `/root/deploy/kafka`，位于系统盘 |
-| Kafka 数据根目录 | `/data1/kafka` |
+| Kafka 数据基础目录 | `KAFKA_DATA_BASE_DIR=/data1/kafka`，可配置 |
 | 数据保留 | 7 天，即 `log.retention.hours=168` |
 | 容量限制 | `log.retention.bytes=-1`，通过时间保留和磁盘监控控制 |
 | 清理策略 | `log.cleanup.policy=delete` |
 | segment 大小 | `log.segment.bytes=1073741824`（1 GiB） |
 | segment 滚动 | `log.roll.hours=24`，适配低流量 Topic |
 | 保留检查 | `log.retention.check.interval.ms=300000`（5 分钟） |
-| 容量规划线 | 最多按 70% 规划，即每台约 358 GB |
+| 容量规划线 | 最多按实际数据盘容量的 70% 规划 |
 | 磁盘告警 | 70% warning、80% critical、85% 进入人工处置 |
 
-持久化目录建议：
+默认持久化目录示例（数据根目录和挂载点均可配置，部署包目录仍固定）：
 
 ```text
 /root/deploy/kafka/                  # 系统盘：部署包和配置
-├── controller-<n>/
+├── controller/
 │   ├── deploy.sh
 │   ├── docker-compose.yml
 │   ├── .env
 │   ├── manifest.json
 │   └── config/
-└── broker-<n>/
+└── broker/
     ├── deploy.sh
     ├── docker-compose.yml
     ├── .env
     ├── manifest.json
     └── config/
 
-/data1/                              # 512 GB HDD：运行时持久化数据
+/data1/                              # 按需规划容量：运行时持久化数据
 ├── docker/                          # Docker data-root
 └── kafka/
-    ├── controller-<n>/metadata/     # controller KRaft 元数据
-    └── broker-<n>/data/             # broker 日志段和 broker 元数据
+    ├── controller/metadata/     # controller KRaft 元数据
+    └── broker/data/             # broker 日志段和 broker 元数据
 ```
 
-部署文件和持久化数据不放在同一子目录中。删除或替换 `/root/deploy/kafka/<role>-<n>/` 不应删除 `/data1/kafka/` 中的数据；停止和重新部署容器也必须保留持久化目录。
+部署文件和持久化数据不放在同一子目录中。删除或替换 `/root/deploy/kafka/<role>/` 不应删除 `/data1/kafka/` 中的数据；停止和重新部署容器也必须保留持久化目录。
 
-controller 与 broker 不共享数据目录，但其数据与 Docker data-root 位于同一个 `/data1` 文件系统。Docker 镜像、容器可写层和容器日志也会消耗该盘容量和 I/O，因此磁盘规划、告警和启动检查必须统计整个 `/data1`，不能只统计 broker 数据目录。
+controller 与 broker 不共享数据目录。默认配置下，其数据与 Docker data-root 位于同一个 `/data1` 文件系统；自定义时可以分盘。Docker 镜像、容器可写层和容器日志也会消耗空间和 I/O，因此同盘时要统计整体占用，分盘时分别规划和监控。
 
-`check` 必须确认部署脚本以 root 执行、`/root/deploy/kafka` 可读写、`/data1` 是实际挂载点、总容量至少满足规格，并验证 Docker 实际 data-root 为 `/data1/docker`。同时检查 `/data1/kafka` 的容器写权限、整个 `/data1` 的使用率和基础 I/O 状态。若 `/data1` 未挂载或 Docker data-root 不符合规划，应阻止启动，避免数据写入系统根盘。
+`check` 必须确认部署脚本以 root 执行、`/root/deploy/kafka` 可读写、自动识别 Kafka 数据路径所在的实际文件系统、可用空间符合实际部署需求，并验证 Docker daemon 与 Compose 可用。同时检查配置数据路径的容器写权限、所选文件系统使用率和基础 I/O 状态。若生产数据路径落在系统根文件系统，应阻止启动，避免数据写入系统根盘。
 
-按 70% 规划线计算，每台 `/data1` 最多规划使用约 358 GB。该空间同时包含 `/data1/docker` 和 `/data1/kafka`，不能全部分配给 Kafka 消息。建议至少为 Docker 镜像、容器可写层、日志和升级临时空间预留 30～50 GB；Kafka 整个集群 7 天业务保留数据先控制在约 260～300 GB，并根据实际 Docker 占用、索引、内部主题、数据倾斜和压缩率修正。该数值用于当前低流量场景的初步判断，实际流量峰值仍需监控。
+按 70% 规划线计算，每台 `/data1` 的规划使用量为实际磁盘容量的 70%。该空间同时包含 `/data1/docker` 和 `/data1/kafka`，不能全部分配给 Kafka 消息。为镜像、容器可写层、日志、升级临时空间及消息索引等按实际占用预留容量，业务可用空间据此估算，不根据 CPU/内存规格推导固定磁盘容量。
 
 Kafka 只能删除已经关闭的 segment。低流量 Topic 如果长时间达不到 1 GiB，可能延迟清理，因此默认设置 `log.roll.hours=24`。7 天保留不是精确到期立即删除，必须保留清理周期和流量波动空间。
 
@@ -370,11 +369,11 @@ broker 初始容量按下式估算：
   峰值压缩后写入字节/秒 × 保留秒数 × 副本数 ÷ broker 数 ÷ 0.70
 ```
 
-还需额外考虑 Docker 占用、内部主题、索引、分区倾斜、重分配临时空间和增长余量。controller 元数据目录建议至少预留 20 GiB；最终值由分区数量和变更频率评估。容量估算结果加上 Docker 预留后超过 `/data1` 的 70% 规划线时，集群初始化必须提示当前固定规格不满足需求。
+还需额外考虑 Docker 占用、内部主题、索引、分区倾斜、重分配临时空间和增长余量。controller 元数据目录建议至少预留 20 GiB；最终值由分区数量和变更频率评估。容量估算结果加上 Docker 预留后超过 `/data1` 的 70% 规划线时，应调整磁盘容量或保留策略；当前生成器不采集业务流量或磁盘容量，不自动完成此估算。
 
 ## 9. 集群初始化（`cluster init`）阶段确认项
 
-交互顺序采用“基础信息 → 拓扑网络 → 存储资源 → Kafka 策略 → 汇总确认”。缺少真实地址或 broker 数据盘容量时，只能保存草案，不生成标记为可部署的节点包。
+交互顺序采用“基础信息 → 拓扑网络 → 存储资源 → Kafka 策略 → 汇总确认”。生成部署包前必须填写真实地址；磁盘容量不作为初始化必填项，由部署前的业务容量规划确认。
 
 ### 9.1 基础与部署环境
 
@@ -384,7 +383,7 @@ broker 初始容量按下式估算：
 | 镜像 | 默认 `apache/kafka:4.3.2`；填写完整镜像地址，可使用私有 registry |
 | 镜像架构 | 与目标 VM 的 amd64/arm64 匹配；实现时拉取并记录 digest |
 | 分发方式 | 管理员人工复制节点包；不自动连接或修改远端主机 |
-| 部署规格 | 默认 `standard`（8C32G + 512 GB HDD）；可选 `minimal`（4C16G + 512 GB HDD）、`test`（2C4G + 至少 20 GB，仅功能验证）；均默认保留 7 天 |
+| 部署规格 | 默认 `standard`（8C32G）；可选 `minimal`（4C16G）、`manual`（按角色输入 CPU 和内存）；磁盘均按需规划，默认保留 7 天 |
 | 客户端认证 | `ENABLE_AUTH` 默认 false；开启后确认初始账号、密码和 `EXTERNAL_PORT`，使用 SCRAM-SHA-512，不启用 ACL/TLS |
 | Docker 环境 | Linux、Docker Engine、可访问的 Docker daemon、Compose v2；可使用 `../docker/setup-docker.sh` 准备，由目标机 `check` 最终确认 |
 | 日志 | stdout/stderr，Docker `json-file` 默认 50 MiB × 5 |
@@ -401,7 +400,7 @@ broker 初始容量按下式估算：
 - 集群内通信地址；
 - broker 客户端 advertised 地址；
 - listener 端口及协议；
-- 宿主机配置目录和数据目录；
+- 宿主机配置目录及 `KAFKA_DATA_BASE_DIR`；
 - 目标容器 UID/GID 和目录写权限；
 - 故障域标签 `broker.rack`；
 - CPU、内存、JVM heap 和数据盘容量。
@@ -439,7 +438,7 @@ broker 初始容量按下式估算：
 
 ### 9.4 访问控制边界
 
-初始化通过 `ENABLE_AUTH` 选择是否启用客户端认证，默认关闭，兼容旧配置。开启时自动启用 EXTERNAL，使用 `SASL_PLAINTEXT + SCRAM-SHA-512`：
+初始化通过 `ENABLE_AUTH` 选择是否启用客户端认证，默认关闭。开启时自动启用 EXTERNAL，使用 `SASL_PLAINTEXT + SCRAM-SHA-512`：
 
 ```properties
 listener.security.protocol.map=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:SASL_PLAINTEXT
@@ -492,7 +491,7 @@ listener.name.external.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.se
 - `docker` 命令存在，Docker daemon 正常且当前用户具有访问权限；
 - `docker compose` V2 可用，Compose 文件可通过 `docker compose config --quiet`；
 - Docker server 架构与目标 Kafka 镜像匹配；
-- Docker data-root 路径、所在挂载点及剩余空间符合规划；
+- Docker daemon 和 Compose v2 可用；Docker data-root 的路径及存储规划由 Docker 部署流程负责；
 - 镜像可用性，可拉取或已离线加载；
 - CPU、内存、文件描述符、时间同步；
 - 端口占用；
@@ -500,7 +499,7 @@ listener.name.external.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.se
 - 已有 `meta.properties` 与节点包身份是否一致；
 - 到其他角色地址的连通性和 listener 的网络访问边界。
 
-本节是 Kafka 节点脚本的实现约束，包含尚需完善的检查项；当前 `deploy.sh check` 执行文件摘要、Docker/Compose、路径、磁盘和已有身份检查。静态校验不运行目标机检查；本地 `test` 验证已在 3 个隔离 Linux 节点中实际执行 `check`、`prepare` 和生命周期命令。
+本节是 Kafka 节点脚本的实现约束，包含尚需完善的检查项；当前 `deploy.sh check` 执行文件摘要、Docker/Compose、路径、磁盘和已有身份检查。静态校验不运行目标机检查；部署方需在目标环境执行 `check`、`prepare` 和生命周期操作并保存验收记录。
 
 ### `prepare`
 
@@ -511,6 +510,8 @@ listener.name.external.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.se
 ### `start`
 
 再次检查身份和配置摘要，执行 `docker compose up -d`，再用角色对应的 Kafka CLI/API 检查本节点状态。controller 在 quorum 尚未形成时可以报告“进程已启动、等待 quorum”，但不能报告集群健康。
+
+所有 controller 均发起启动后，在任一 controller 包中执行 `./deploy.sh health 120`，通过后才启动 broker。该命令使用内部 controller 端口，不依赖 broker；严格要求三个入口可查询、集群身份和 voter 清单匹配、leader 一致且复制 lag 全为 0。查询使用独立临时 CLI 容器，节点不需要 Python。`status` 继续只显示容器状态，单个 controller 的 `start` 不等待完整 quorum，避免首次启动时阻塞其余 controller 的启动。
 
 ### `stop` 与 `restart`
 
@@ -527,8 +528,8 @@ listener.name.external.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.se
 默认由管理员人工复制节点包：
 
 ```bash
-scp -r cluster/nodes/controller-1-<host>/ root@<host>:/root/deploy/kafka/controller-1/
-scp -r cluster/nodes/broker-1-<host>/     root@<host>:/root/deploy/kafka/broker-1/
+scp -r cluster/nodes/controller-1-<host>/ root@<host>:/root/deploy/kafka/controller/
+scp -r cluster/nodes/broker-1-<host>/     root@<host>:/root/deploy/kafka/broker/
 ```
 
 节点包默认由管理员人工分发。本轮不实现自动 SSH/scp 分发，避免集群初始化工具隐式连接或修改远端主机。分发时使用 SSH host key 校验，并将每个角色包复制到新的目标目录；不要覆盖正在运行的部署目录，也不要操作 `/data1/kafka` 数据目录。
@@ -590,9 +591,9 @@ scp -r cluster/nodes/broker-1-<host>/     root@<host>:/root/deploy/kafka/broker-
 - 重复 `prepare` 不重新格式化；
 - 配置摘要或身份不一致时拒绝启动。
 
-### 14.3 测试规格的最小验收
+### 14.3 本地功能验证的最小验收
 
-本地 `test` 只要求验证部署脚本功能和部署后的 Kafka 基础行为，不执行第 14.4 节的性能验收，也不要求完整的生产故障演练：
+本地 `manual` 只要求验证部署脚本功能和部署后的 Kafka 基础行为，不执行第 14.4 节的性能验收，也不要求完整的生产故障演练：
 
 1. 3 台 VM 上的 6 个角色包均能完成 `check`、`prepare`、`start`、`status` 和 `stop`。
 2. quorum 有 leader，3 个 controller 为 voter 且复制正常，3 个 broker 注册。
@@ -644,7 +645,7 @@ scp -r cluster/nodes/broker-1-<host>/     root@<host>:/root/deploy/kafka/broker-
 3. 已实现 properties、Compose 和角色包模板。
 4. 已实现节点 `check`、`prepare`、`start/stop/restart/status/logs`。
 5. 支持标准/最小生产/测试三档规格的节点包生成、Shell 语法、JSON、文件摘要和 Compose 静态校验。
-6. 已使用实际 arm64 `apache/kafka:4.3.2` 镜像，在 3 个隔离 Linux 节点中执行 `test` 档的节点检查、storage format、启动、quorum、broker、3 副本生产消费、幂等 prepare、broker 重启和容器重建后的消息保留验证；发现并修复镜像用户无权读取 root 配置的问题。
-7. 独立 VM、amd64、完整生产故障场景、信号退出时序和容量验收仍未执行。本地功能通过不代表生产部署验收通过。
+6. 部署方应在目标环境执行 manual 规格检查、初始化、quorum、三副本收发和恢复验证，并单独保留记录。
+7. 生产上线前应覆盖目标系统和架构、独立节点故障、退出恢复及容量验收；测试环境通过不能替代生产验收。
 
 生产部署仍需完成目标环境的检查和第 14 节相应验收。
