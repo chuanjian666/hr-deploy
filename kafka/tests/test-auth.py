@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 IMAGE = os.environ.get("KAFKA_AUTH_TEST_IMAGE", "apache/kafka:4.3.2")
 PREFIX = "kafka-auth-" + uuid.uuid4().hex[:8]
 CONTAINERS = []
+CLIENTS = None
 
 
 def run(args, *, data=None, check=True, timeout=60, env=None):
@@ -45,12 +46,17 @@ def wait_for(label, action, predicate=lambda result: result.returncode == 0):
 def cli(tool, *args, config="admin", authenticated=True, **kwargs):
     port = 19092 if authenticated else 9092
     options = ["--command-config", f"/test-clients/{config}.properties"] if config else []
-    return docker("exec", "-i", "-e", "KAFKA_HEAP_OPTS=-Xms64m -Xmx128m",
-                  f"{PREFIX}-broker-1", f"/opt/kafka/bin/{tool}",
+    return docker("run", "--rm", "-i", "--network", PREFIX, "--user", "0",
+                  "--memory", "512m", "--memory-swap", "512m",
+                  "-v", f"{CLIENTS}:/test-clients:ro",
+                  "-e", "KAFKA_HEAP_OPTS=-Xms128m -Xmx256m",
+                  "-e", "KAFKA_LOG4J_OPTS=-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml",
+                  "--entrypoint", f"/opt/kafka/bin/{tool}", IMAGE,
                   "--bootstrap-server", f"broker-1:{port}", *options, *args, **kwargs)
 
 
 def main():
+    global CLIENTS
     with tempfile.TemporaryDirectory(prefix="kafka-auth-") as temp:
         work = Path(temp)
         config = work / "kafka-admin.conf"
@@ -71,6 +77,7 @@ AUTH_PASSWORD="Auth-Smoke-Password_2026"
         cluster = work / "cluster"
         manifest = json.loads((cluster / "manifest.json").read_text())
         clients = cluster / "clients"
+        CLIENTS = clients
         admin = (clients / "admin.properties").read_text()
         # Bound failures so negative checks cannot hang on metadata retries.
         limits = "\ndefault.api.timeout.ms=5000\nrequest.timeout.ms=3000\n"
@@ -99,7 +106,8 @@ AUTH_PASSWORD="Auth-Smoke-Password_2026"
                     format_args += ["--no-initial-controllers"]
                 # Root only in this portable smoke test, to read host-owned 600 bind mounts.
                 docker("run", "--rm", "--user", "0", "--network", PREFIX, *mounts,
-                       "-e", "KAFKA_HEAP_OPTS=-Xms64m -Xmx128m",
+                       "--memory", "512m", "--memory-swap", "512m",
+                       "-e", "KAFKA_HEAP_OPTS=-Xms128m -Xmx256m",
                        "--entrypoint", "/opt/kafka/bin/kafka-storage.sh", IMAGE, *format_args)
                 name = f"{PREFIX}-{alias}"
                 CONTAINERS.append(name)

@@ -50,7 +50,7 @@ chmod 600 /root/deploy/kafka/clients/admin.properties
 install -d -m 700 /root/deploy/kafka/message-check
 ```
 
-每条 Kafka 命令使用临时 CLI 容器，并在结束后自动删除。连接配置以只读方式挂载。任一命令失败时先排查，再继续下一步。
+每条 Kafka 命令使用独立的 `docker run --rm` 临时 CLI 容器，并在结束后自动删除。每个容器内存上限为 512 MiB，JVM 堆为 128–256 MiB，`--memory-swap 512m` 禁止额外使用 swap；连接配置以只读方式挂载。逐条执行，避免多个 JVM 同时挤占节点资源。任一命令失败时先排查，再继续下一步，资源调整方法见 [账号认证](authentication.md#kafka-cli-执行方式和内存限制)。
 
 本节使用已启用认证的集群，免认证操作见第 7 节。
 
@@ -58,6 +58,7 @@ install -d -m 700 /root/deploy/kafka/message-check
 
 ```bash
 docker run --rm -i --network host --user 0:0 \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   -v /root/deploy/kafka/clients/admin.properties:/run/kafka-client.properties:ro \
@@ -65,6 +66,7 @@ docker run --rm -i --network host --user 0:0 \
   --bootstrap-server 127.0.0.1:19092 --command-config /run/kafka-client.properties
 
 docker run --rm -i --network host --user 0:0 \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   -v /root/deploy/kafka/clients/admin.properties:/run/kafka-client.properties:ro \
@@ -72,6 +74,7 @@ docker run --rm -i --network host --user 0:0 \
   --bootstrap-server 127.0.0.1:19092 --command-config /run/kafka-client.properties describe --status
 
 docker run --rm -i --network host --user 0:0 \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   -v /root/deploy/kafka/clients/admin.properties:/run/kafka-client.properties:ro \
@@ -89,6 +92,7 @@ docker run --rm -i --network host --user 0:0 \
 
 ```bash
 docker run --rm -i --network host --user 0:0 \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   -v /root/deploy/kafka/clients/admin.properties:/run/kafka-client.properties:ro \
@@ -96,6 +100,7 @@ docker run --rm -i --network host --user 0:0 \
   --bootstrap-server 127.0.0.1:19092 --command-config /run/kafka-client.properties --create --topic message-check-manual --partitions 1 --replication-factor 3 --config min.insync.replicas=2
 
 docker run --rm -i --network host --user 0:0 \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   -v /root/deploy/kafka/clients/admin.properties:/run/kafka-client.properties:ro \
@@ -113,6 +118,7 @@ docker run --rm -i --network host --user 0:0 \
 printf '%s\n' hello-kafka-1 hello-kafka-2 hello-kafka-3 > /root/deploy/kafka/message-check/expected.txt
 
 docker run --rm -i --network host --user 0:0 \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   -v /root/deploy/kafka/clients/admin.properties:/run/kafka-client.properties:ro \
@@ -120,6 +126,7 @@ docker run --rm -i --network host --user 0:0 \
   --bootstrap-server 127.0.0.1:19092 --command-config /run/kafka-client.properties --topic message-check-manual --producer-property acks=all < /root/deploy/kafka/message-check/expected.txt
 
 docker run --rm -i --network host --user 0:0 \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   -v /root/deploy/kafka/clients/admin.properties:/run/kafka-client.properties:ro \
@@ -140,6 +147,7 @@ diff -u /root/deploy/kafka/message-check/expected.txt /root/deploy/kafka/message
 
 ```bash
 docker run --rm -i --network host --user 0:0 \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   -v /root/deploy/kafka/clients/admin.properties:/run/kafka-client.properties:ro \
@@ -170,24 +178,27 @@ docker exec -it hr-kafka-local-test-node-1-1 bash
 ssh root@10.0.0.11
 ```
 
-后续所有命令在进入后的 broker 节点执行。本机入口 `127.0.0.1:9092` 使用 host 网络连接 broker，三个 advertised 地址也必须在该节点内可达。
+后续所有命令在进入后的 broker 节点执行。CLI 同样通过独立临时容器运行，内存上限 512 MiB、JVM 堆 128–256 MiB，命令逐条执行。本机入口 `127.0.0.1:9092` 使用 host 网络连接 broker，三个 advertised 地址也必须在该节点内可达。
 
 ### 检查 broker 和 controller
 
 ```bash
 docker run --rm -i --network host \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   --entrypoint /opt/kafka/bin/kafka-broker-api-versions.sh apache/kafka:4.3.2 \
   --bootstrap-server 127.0.0.1:9092
 
 docker run --rm -i --network host \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   --entrypoint /opt/kafka/bin/kafka-metadata-quorum.sh apache/kafka:4.3.2 \
   --bootstrap-server 127.0.0.1:9092 describe --status
 
 docker run --rm -i --network host \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   --entrypoint /opt/kafka/bin/kafka-metadata-quorum.sh apache/kafka:4.3.2 \
@@ -202,12 +213,14 @@ docker run --rm -i --network host \
 
 ```bash
 docker run --rm -i --network host \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   --entrypoint /opt/kafka/bin/kafka-topics.sh apache/kafka:4.3.2 \
   --bootstrap-server 127.0.0.1:9092 --create --topic message-check-noauth --partitions 1 --replication-factor 3 --config min.insync.replicas=2
 
 docker run --rm -i --network host \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   --entrypoint /opt/kafka/bin/kafka-topics.sh apache/kafka:4.3.2 \
@@ -223,6 +236,7 @@ install -d -m 700 /root/deploy/kafka/message-check-noauth
 printf '%s\n' hello-kafka-1 hello-kafka-2 hello-kafka-3 > /root/deploy/kafka/message-check-noauth/expected.txt
 
 docker run --rm -i --network host \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   --entrypoint /opt/kafka/bin/kafka-console-producer.sh apache/kafka:4.3.2 \
@@ -233,6 +247,7 @@ docker run --rm -i --network host \
 
 ```bash
 docker run --rm -i --network host \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   --entrypoint /opt/kafka/bin/kafka-console-consumer.sh apache/kafka:4.3.2 \
@@ -250,6 +265,7 @@ diff -u /root/deploy/kafka/message-check-noauth/expected.txt /root/deploy/kafka/
 
 ```bash
 docker run --rm -i --network host \
+  --memory 512m --memory-swap 512m \
   -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
   -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
   --entrypoint /opt/kafka/bin/kafka-topics.sh apache/kafka:4.3.2 \

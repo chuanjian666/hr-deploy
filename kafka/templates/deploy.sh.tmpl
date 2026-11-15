@@ -100,7 +100,7 @@ prepare() {
     mkdir -p "$HOST_DATA_DIR"
     # Resolve the configured image user instead of assuming the container runs as root.
     local image_owner
-    image_owner="$(docker run --rm --network none --entrypoint /bin/sh "$KAFKA_IMAGE" \
+    image_owner="$(docker run --rm --network none --memory 64m --memory-swap 64m --entrypoint /bin/sh "$KAFKA_IMAGE" \
         -ec 'printf "%s:%s\n" "$(id -u)" "$(id -g)"')"
     [[ "$image_owner" =~ ^[0-9]+:[0-9]+$ ]] || die "无法确定 Kafka 镜像运行 UID/GID: $image_owner"
     chown "$image_owner" "$HOST_DATA_DIR" "$SCRIPT_DIR/config" \
@@ -128,6 +128,7 @@ prepare() {
     fi
     info "格式化 $NODE_ROLE-$NODE_INDEX 数据目录"
     docker run --rm --network host \
+        --memory 512m --memory-swap 512m \
         -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
         -v "$SCRIPT_DIR/config:/etc/kafka/custom:ro" \
         -v "$HOST_DATA_DIR:/var/lib/kafka/data" \
@@ -154,6 +155,7 @@ controller_quorum_cli() {
     # Use a temporary CLI container so its JVM does not consume the controller's
     # memory limit. Controller traffic is PLAINTEXT; no client password is needed.
     docker run --rm --network host \
+        --memory 512m --memory-swap 512m \
         -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
         -e KAFKA_LOG4J_OPTS='-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml' \
         --entrypoint /bin/bash "$KAFKA_IMAGE" -ec '

@@ -4,6 +4,8 @@
 
 本文是供部署人员使用的通用操作手册，不记录具体环境或历史验收结论。上线验收应在目标环境执行并另行留档，认证配置和账号管理见 [authentication.md](authentication.md)，本地演练见 [deploy-local.md](deploy-local.md)。
 
+首次部署默认不启用 ACL；部署后需要限制账号的 Topic、消费组和管理权限时，按 [部署后启用 ACL 和账号授权](enable-acl-after-deploy.md) 安排切换与验收。
+
 ## 1. 确认拓扑、资源和网络
 
 本文统一以仓库路径 `/root/hr-deploy` 和下表地址为示例。执行前直接将命令中的示例路径、IP 和镜像替换成实际值。地址必须稳定且所有客户端可达；本文命令采用 root SSH，若使用普通运维账号，需按实际 sudo 和目录权限调整。
@@ -33,7 +35,7 @@
 
 自定义路径时，直接修改第 2 节命令中的数据盘路径和 Docker 的 `--data-root` 参数，第 3 节在交互提示中填写实际 Kafka 数据基础目录。各节点的 Kafka 数据目录采用相同路径。
 
-本文启用客户端 SCRAM 认证。当前实现没有 TLS 和 ACL，仅适用于已接受此安全边界的可信隔离内网；账号认证不提供 Topic 权限隔离。
+本文首次部署启用客户端 SCRAM 认证，未配置 TLS 和 ACL，仅适用于已接受此安全边界的可信隔离内网；账号认证不提供 Topic 权限隔离。后续需要 ACL 时按上述独立操作文档切换。
 
 | 端口 | 放行范围 | 用途 |
 | --- | --- | --- |
@@ -115,7 +117,10 @@ scp -r /root/hr-deploy/kafka/cluster/nodes/broker-3-10.0.0.13/. root@10.0.0.13:/
 ```bash
 docker pull apache/kafka:4.3.2
 docker image inspect apache/kafka:4.3.2 --format 'architecture={{.Architecture}} digests={{json .RepoDigests}}'
-docker run --rm --network none --entrypoint /opt/kafka/bin/kafka-topics.sh apache/kafka:4.3.2 --version
+docker run --rm --network none \
+  --memory 512m --memory-swap 512m \
+  -e KAFKA_HEAP_OPTS='-Xms128m -Xmx256m' \
+  --entrypoint /opt/kafka/bin/kafka-topics.sh apache/kafka:4.3.2 --version
 bash /root/deploy/kafka/controller/deploy.sh check
 bash /root/deploy/kafka/controller/deploy.sh prepare
 bash /root/deploy/kafka/broker/deploy.sh check

@@ -24,6 +24,7 @@ topic = f"deploy-smoke-{stamp.lower()}"
 sequence = 0
 checks = []
 client_configs = {}
+client_dir = f"/tmp/kafka-verify-{stamp}"
 
 
 def run(args, *, data=None, check=True, timeout=60):
@@ -50,18 +51,20 @@ def deploy(index, role, command, **kwargs):
 
 
 def cli(tool, *args, account="admin", internal=False, target=None, **kwargs):
-    options = ["--command-config", f"/tmp/kafka-verify-{account}.properties"] if authentication and not internal and account else []
+    options = ["--command-config", f"/test-clients/{account}.properties"] if authentication and not internal and account else []
     endpoint = target or (f"172.30.93.11:{manifest['brokers'][0]['port']}" if internal else bootstrap)
-    return node(1, "docker", "exec", "-i", "-e", "KAFKA_HEAP_OPTS=-Xms128m -Xmx256m",
+    return node(1, "docker", "run", "--rm", "-i", "--network", "host", "--user", "0",
+                "--memory", "512m", "--memory-swap", "512m",
+                "-v", f"{client_dir}:/test-clients:ro",
+                "-e", "KAFKA_HEAP_OPTS=-Xms128m -Xmx256m",
                 "-e", "KAFKA_LOG4J_OPTS=-Dlog4j2.configurationFile=/opt/kafka/config/tools-log4j2.yaml",
-                f"{prefix}-broker-1", f"/opt/kafka/bin/{tool}",
+                "--entrypoint", f"/opt/kafka/bin/{tool}", manifest["kafka"]["image"],
                 "--bootstrap-server", endpoint, *options, *args, **kwargs)
 
 
 def install_private(name, content):
     # Pass secrets on stdin; run() logs commands and outputs, never stdin.
-    node(1, "docker", "exec", "-i", f"{prefix}-broker-1", "sh", "-ec",
-         f"umask 077; cat > /tmp/kafka-verify-{name}.properties", data=content)
+    node(1, "sh", "-ec", f"umask 077; cat > {client_dir}/{name}.properties", data=content)
 
 
 def install_clients():
@@ -74,9 +77,9 @@ def create_account(name):
     install_private("account-update", f"SCRAM-SHA-512=iterations=8192,password={password}\n")
     try:
         cli("kafka-configs.sh", "--alter", "--entity-type", "users", "--entity-name", name,
-            "--add-config-file", "/tmp/kafka-verify-account-update.properties")
+            "--add-config-file", "/test-clients/account-update.properties")
     finally:
-        node(1, "docker", "exec", f"{prefix}-broker-1", "rm", "-f", "/tmp/kafka-verify-account-update.properties")
+        node(1, "rm", "-f", f"{client_dir}/account-update.properties")
     content = re.sub(r'username="[^"]*" password="[^"]*"',
                      f'username="{name}" password="{password}"', client_configs["admin"])
     client_configs[name] = content
@@ -147,6 +150,7 @@ def consume(label):
 
 
 try:
+    node(1, "install", "-d", "-m", "700", client_dir)
     resources = []
     for index in (1, 2, 3):
         outer = json.loads(run(["docker", "inspect", f"hr-kafka-local-test-node-{index}-1"]).stdout)[0]
@@ -225,8 +229,6 @@ try:
     consume("messages-after-restart")
     deploy(1, "broker", "stop")
     deploy(1, "broker", "start")
-    if authentication:
-        install_clients()
     wait_topic("ISR restored after broker recreation")
     consume("messages-after-recreation")
     for index in (1, 2, 3):
@@ -245,3 +247,5 @@ except Exception:
         for role in ("controller", "broker"):
             node(index, "docker", "logs", "--tail", "100", f"{prefix}-{role}-{index}", check=False)
     raise
+finally:
+    node(1, "rm", "-rf", client_dir, check=False)

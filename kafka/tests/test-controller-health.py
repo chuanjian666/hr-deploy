@@ -47,6 +47,7 @@ check_files() { :; }
 check_runtime() { :; }
 docker() {
     [[ "$1" == run && "$*" == *"--network host"* && "$*" == *"--bootstrap-controller"* ]] || return 9
+    [[ "$*" == *"--memory 512m --memory-swap 512m"* ]] || return 9
     [[ "$*" == *"-Xms128m -Xmx256m"* && "$*" == *"default.api.timeout.ms=5000"* ]] || return 9
     local -a args=("$@")
     local count=${#args[@]} endpoint query

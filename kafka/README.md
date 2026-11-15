@@ -1,12 +1,13 @@
 # Kafka 部署工具
 
-用于生成 3 个 KRaft controller 和 3 个 broker 的独立 Docker Compose 节点包。支持可选客户端 SCRAM 账号认证，内部通信始终使用 PLAINTEXT，不启用 TLS 和 ACL，并关闭 Topic 自动创建。
+用于生成 3 个 KRaft controller 和 3 个 broker 的独立 Docker Compose 节点包。支持可选客户端 SCRAM 账号认证，内部通信始终使用 PLAINTEXT，默认不启用 TLS 和 ACL，并关闭 Topic 自动创建。
 
 ## 部署指南
 
 - [本地手动部署](docs/deploy-local.md)：在测试宿主机准备三个模拟节点，逐步生成、分发、初始化、启动和验收。
 - [生产部署](docs/deploy-production.md)：在三台 Linux 服务器上准备环境、部署六个角色，执行状态检查和专用 Topic 读写验收。
 - [部署后消息收发验证](docs/verify-messages.md)：独立手动验证文档，本地和生产使用相同的 Topic、生产、消费及内容比对命令。
+- [部署后启用 ACL 和账号授权](docs/enable-acl-after-deploy.md)：已认证集群的权限切换、账号授权、正反向验证及回退。
 - [功能验证要求](docs/local-test.md)：测试环境约束、自动化入口和验收记录要求。
 - [本地执行目录](docs/variables.md)：本机执行位置及固定节点地址。
 
@@ -105,7 +106,8 @@ Docker 在每台目标机通过自己的脚本设置；新装时将实际路径�
 
 ## 当前边界
 
+- Kafka 管理、格式化、健康检查和消息验证工具统一通过独立的 `docker run --rm` 执行，默认容器内存上限 512 MiB、JVM 堆 128–256 MiB，并限制额外 swap；不在 broker/controller 服务容器内用 `docker exec` 启动 CLI JVM。配置及操作示例见 [账号认证](docs/authentication.md#kafka-cli-执行方式和内存限制)。长期运行的 Kafka 服务仍由 Compose 按角色规格管理。
 - `cluster validate` 只做静态校验，不拉取镜像、不启动容器。
 - `deploy.sh check` 需要在目标 Linux 节点以 root 执行。
 - Compose 和 storage format 使用 `apache/kafka:4.3.2` 镜像内的 `/opt/kafka/bin` 路径；正式部署前仍应在目标环境确认镜像架构及路径。
-- 当前未启用 ACL，即使开启认证也不能限制只有管理员才能显式创建 Topic，各账号权限相同。
+- 默认未启用 ACL，此时即使开启认证也不能限制只有管理员才能显式创建 Topic，各账号权限相同。部署后可按 [ACL 操作文档](docs/enable-acl-after-deploy.md) 手动启用权限控制。
