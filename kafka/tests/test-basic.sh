@@ -33,6 +33,33 @@ export KAFKA_INTERACTIVE=false
 "$ROOT/kafka-admin.sh" cluster init >/dev/null
 "$ROOT/kafka-admin.sh" cluster validate >/dev/null
 first_identity="$(manifest_identity)"
+node="$TMP/cluster/nodes/controller-1-10.20.0.11"
+# Exercise a locally edited deploy.sh through its CLI without contacting Docker.
+probe="$TMP/checksum probe"
+cp -R "$node" "$probe"
+sed '/^case "${1:-}" in/i\
+check_runtime() { :; }\
+compose() { echo "$@"; }
+' "$node/deploy.sh" > "$probe/deploy.sh"
+if "$probe/deploy.sh" logs 17 >"$TMP/checksum.log" 2>&1; then
+    echo "edited deploy.sh passed default checksum validation" >&2; exit 1
+fi
+grep -Fq 'deploy.sh: FAILED' "$TMP/checksum.log"
+grep -Fq -- '--skip-checksum logs 17' "$TMP/checksum.log"
+assert_eq "$("$probe/deploy.sh" --skip-checksum logs 17)" "logs -f --tail=17"
+assert_eq "$("$probe/deploy.sh" logs 17 --skip-checksum)" "logs -f --tail=17"
+mv "$probe/config/server.properties" "$probe/config/server.properties.saved"
+if "$probe/deploy.sh" --skip-checksum logs 17 >"$TMP/checksum.log" 2>&1; then
+    echo "skip-checksum accepted a missing required file" >&2; exit 1
+fi
+grep -Fq '缺少节点包文件: config/server.properties' "$TMP/checksum.log"
+# A manually shortened ID must fail before the runtime or storage is touched.
+sed 's/^CLUSTER_ID=./CLUSTER_ID=/' "$node/.env" > "$TMP/short-id.env"
+cp "$TMP/short-id.env" "$node/.env"
+if "$node/deploy.sh" prepare >"$TMP/prepare.log" 2>&1; then
+    echo "prepare accepted a truncated cluster ID" >&2; exit 1
+fi
+grep -q 'CLUSTER_ID 应为 22 位' "$TMP/prepare.log"
 "$ROOT/kafka-admin.sh" cluster init >/dev/null
 assert_eq "$(manifest_identity)" "$first_identity"
 assert_eq "$(find "$TMP/cluster/nodes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" "6"

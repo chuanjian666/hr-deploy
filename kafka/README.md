@@ -58,6 +58,8 @@ scp -r /root/hr-deploy/kafka/cluster/nodes/broker-1-10.0.0.11/. root@10.0.0.11:/
 /root/deploy/kafka/controller/deploy.sh status
 ```
 
+节点脚本默认检查 SHA-256 摘要。现场调整脚本或配置后，先核对提示中校验失败的文件；确认修改符合预期时，可按报错给出的命令重试，例如 `./deploy.sh --skip-checksum prepare`。该参数只对本次命令生效，仍会检查必需文件，并执行该命令原有的数据目录和身份检查。
+
 三个 controller 均发起启动后，在任一 controller 包中执行：
 
 ```bash
@@ -68,6 +70,8 @@ scp -r /root/hr-deploy/kafka/cluster/nodes/broker-1-10.0.0.11/. root@10.0.0.11:/
 检查三个 controller 入口、cluster ID、voter 清单、leader 一致性及全部 voter 的复制 lag=0。检查不依赖 broker，使用临时 CLI 容器，不重启服务或修改数据；`status` 仍只显示容器状态。初次部署应在此检查通过后启动 broker；`health` 只适用于 controller 包。
 
 `prepare` 会格式化 KRaft 数据目录，是首次部署操作。脚本发现已有且身份一致的 `meta.properties` 时跳过；身份冲突或非空但未格式化的目录会拒绝处理。
+
+集群 ID 可能以 `-` 开头，部署脚本会把完整值传给 Kafka。若之前手动删过该字符，在原管理机保留该集群的 `config/kafka-admin.conf` 和 `cluster/manifest.json`，使用修复后的脚本运行 `KAFKA_INTERACTIVE=false ./kafka-admin.sh cluster init` 和 `./kafka-admin.sh cluster validate`，再分发对应节点包。对于已初始化的节点，先核对数据目录中 `meta.properties` 的 `cluster.id` 与原清单一致；如有冲突，保留现场并核对包与节点的对应关系。
 
 ## 部署规格
 

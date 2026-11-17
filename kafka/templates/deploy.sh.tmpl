@@ -31,7 +31,11 @@ check_files() {
     if [[ "${ENABLE_AUTH:-false}" == true && "$NODE_ROLE" == controller ]]; then
         [[ -f "$SCRIPT_DIR/config/bootstrap.scram" ]] || die "缺少初始 SCRAM 凭据"
     fi
-    (cd "$SCRIPT_DIR" && sha256sum -c checksums.sha256 >/dev/null) || die "节点包文件摘要不匹配"
+    if [[ "$skip_checksum" == true ]]; then
+        warn "本次调用已跳过节点包 SHA-256 校验"
+    elif ! (cd "$SCRIPT_DIR" && sha256sum --quiet -c checksums.sha256); then
+        die "节点包 SHA-256 校验失败。若已确认是本次手动修改，可执行: $checksum_retry"
+    fi
 }
 
 check_runtime() {
@@ -88,6 +92,7 @@ check_identity() {
 
 check() {
     load_env
+    [[ ${CLUSTER_ID:-} =~ ^[A-Za-z0-9_-]{22}$ ]] || die "CLUSTER_ID 应为 22 位 Base64URL 字符串。请从原管理机节点包恢复 .env，保留开头的 -"
     check_files
     check_runtime
     check_host
@@ -117,7 +122,8 @@ prepare() {
         die "数据目录非空但不存在 meta.properties，拒绝格式化: $HOST_DATA_DIR"
     fi
 
-    local -a format_args=(format --cluster-id "$CLUSTER_ID" --config /etc/kafka/custom/server.properties)
+    # A base64url cluster ID can start with "-" and look like another CLI option.
+    local -a format_args=(format "--cluster-id=$CLUSTER_ID" --config /etc/kafka/custom/server.properties)
     if [[ "$NODE_ROLE" == controller ]]; then
         format_args+=(--initial-controllers "$INITIAL_CONTROLLERS")
         if [[ "${ENABLE_AUTH:-false}" == true ]]; then
@@ -281,9 +287,23 @@ health() {
 }
 
 usage() {
-    echo "用法: $0 {check|prepare|start|stop|restart|status|logs [tail]|health [等待秒数]}"
+    echo "用法: $0 [--skip-checksum] {check|prepare|start|stop|restart|status|logs [tail]|health [等待秒数]}"
+    echo "--skip-checksum  仅本次跳过节点包 SHA-256 校验"
     echo "health：仅 controller；默认检查一次，可指定轮询等待时间"
 }
+
+skip_checksum=false
+for arg in "$@"; do
+    shift
+    if [[ "$arg" == --skip-checksum ]]; then
+        skip_checksum=true
+    else
+        set -- "$@" "$arg"
+    fi
+done
+readonly skip_checksum
+printf -v checksum_retry '%q ' "$0" --skip-checksum "$@"
+readonly checksum_retry
 
 case "${1:-}" in
     check) check ;;

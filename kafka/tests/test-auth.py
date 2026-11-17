@@ -96,7 +96,7 @@ AUTH_PASSWORD="Auth-Smoke-Password_2026"
                 data.mkdir()
                 mounts = ["-v", f"{package / 'config'}:/etc/kafka/custom:ro",
                           "-v", f"{data}:/var/lib/kafka/data"]
-                format_args = ["format", "--cluster-id", manifest["cluster"]["id"],
+                format_args = ["format", f"--cluster-id={manifest['cluster']['id']}",
                                "--config", "/etc/kafka/custom/server.properties"]
                 if role == "controller":
                     directory_id = manifest["controllers"][0]["directoryId"]

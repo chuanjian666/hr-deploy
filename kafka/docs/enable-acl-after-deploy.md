@@ -350,7 +350,7 @@ kafka_cli kafka-acls.sh --bootstrap-server "$BOOTSTRAP" --command-config "$ADMIN
 | `TopicAuthorizationException` | 账号实际使用的 Topic、操作、前缀规则及是否存在 Deny |
 | `GroupAuthorizationException` | 实际 `group.id` 是否授权，是否误把账号名当消费组名 |
 | `TransactionalIdAuthorizationException` | 实际事务 ID 和账号的 Write/Describe 权限 |
-| 节点包摘要不匹配 | 是否分发完整包，是否手改配置后没有同步摘要；不要直接跳过校验 |
+| 节点包摘要不匹配 | 核对分发的文件和手动修改；确认是预期修改时，可按报错提示用 `--skip-checksum` 重试本次节点命令 |
 
 部分节点切换失败时停止后续操作，保持业务暂停。先修复当前节点或回退该节点，恢复 quorum 和 ISR；不要继续停下一个节点。
 
