@@ -33,6 +33,9 @@ export KAFKA_INTERACTIVE=false
 "$ROOT/kafka-admin.sh" cluster init >/dev/null
 "$ROOT/kafka-admin.sh" cluster validate >/dev/null
 first_identity="$(manifest_identity)"
+[[ "${first_identity%%|*}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{21}$ ]] || {
+    echo "unexpected new cluster ID format" >&2; exit 1
+}
 node="$TMP/cluster/nodes/controller-1-10.20.0.11"
 # Exercise a locally edited deploy.sh through its CLI without contacting Docker.
 probe="$TMP/checksum probe"

@@ -341,7 +341,10 @@ PY
     parse_hosts BROKER_HOSTS "$BROKER_HOSTS"; local broker_hosts=("${PARSED_HOSTS[@]}")
     read_existing_identities
     if [[ -z "$CLUSTER_ID" ]]; then
-        CLUSTER_ID="$(new_kafka_id)"
+        # Keep new cluster IDs convenient to pass to command-line tools.
+        while [[ ! "$CLUSTER_ID" =~ ^[A-Za-z0-9] ]]; do
+            CLUSTER_ID="$(new_kafka_id)" || die "生成 cluster ID 失败"
+        done
         CONTROLLER_DIRECTORY_IDS=("$(new_kafka_id)" "$(new_kafka_id)" "$(new_kafka_id)")
     else
         log_info "复用现有 cluster ID 和 controller directory ID"

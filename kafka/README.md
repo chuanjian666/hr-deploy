@@ -71,7 +71,7 @@ scp -r /root/hr-deploy/kafka/cluster/nodes/broker-1-10.0.0.11/. root@10.0.0.11:/
 
 `prepare` 会格式化 KRaft 数据目录，是首次部署操作。脚本发现已有且身份一致的 `meta.properties` 时跳过；身份冲突或非空但未格式化的目录会拒绝处理。
 
-集群 ID 可能以 `-` 开头，部署脚本会把完整值传给 Kafka。若之前手动删过该字符，在原管理机保留该集群的 `config/kafka-admin.conf` 和 `cluster/manifest.json`，使用修复后的脚本运行 `KAFKA_INTERACTIVE=false ./kafka-admin.sh cluster init` 和 `./kafka-admin.sh cluster validate`，再分发对应节点包。对于已初始化的节点，先核对数据目录中 `meta.properties` 的 `cluster.id` 与原清单一致；如有冲突，保留现场并核对包与节点的对应关系。
+管理机首次执行 `cluster init` 时生成 22 位 Base64URL 集群 ID，新 ID 的首字符为英文字母或数字。已有集群继续使用原清单中的完整 ID，包括开头的 `-` 或 `_`。若之前手动删过首字符，在原管理机保留该集群的 `config/kafka-admin.conf` 和 `cluster/manifest.json`，运行 `KAFKA_INTERACTIVE=false ./kafka-admin.sh cluster init` 和 `./kafka-admin.sh cluster validate`，再分发对应节点包。对于已初始化的节点，先核对数据目录中 `meta.properties` 的 `cluster.id` 与原清单一致；如有冲突，保留现场并核对包与节点的对应关系。
 
 ## 部署规格
 
