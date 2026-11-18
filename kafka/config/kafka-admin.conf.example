@@ -12,6 +12,8 @@ MANUAL_BROKER_MEMORY=""
 # 3 个 controller 与 3 个 broker，按序号一一共置时可填写相同地址。
 CONTROLLER_HOSTS=""
 BROKER_HOSTS=""
+# all：监听 0.0.0.0；node_ip：绑定各角色 HOSTS 中对应的固定 IPv4。
+LISTEN_ADDRESS_MODE="all"
 
 CONTROLLER_PORT="9093"
 BROKER_PORT="9092"

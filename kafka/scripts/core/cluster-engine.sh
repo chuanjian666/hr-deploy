@@ -66,6 +66,7 @@ interactive_config() {
     fi
     read -r -p "3 个 controller 地址，逗号分隔 [$CONTROLLER_HOSTS]: " input; [[ -z "$input" ]] || save_config CONTROLLER_HOSTS "$input"
     read -r -p "3 个 broker 地址，逗号分隔 [$BROKER_HOSTS]: " input; [[ -z "$input" ]] || save_config BROKER_HOSTS "$input"
+    read -r -p "监听地址模式 all=0.0.0.0 / node_ip=各节点固定 IPv4 [$LISTEN_ADDRESS_MODE]: " input; [[ -z "$input" ]] || save_config LISTEN_ADDRESS_MODE "$input"
     read -r -p "Kafka 数据基础目录（KAFKA_DATA_BASE_DIR）[$KAFKA_DATA_BASE_DIR]: " input; [[ -z "$input" ]] || save_config KAFKA_DATA_BASE_DIR "$input"
     read -r -p "启用客户端账号认证 true/false [$ENABLE_AUTH]: " input; [[ -z "$input" ]] || save_config ENABLE_AUTH "$input"
     if [[ "$ENABLE_AUTH" == true ]]; then
@@ -190,6 +191,8 @@ PY
 
 generate_node() {
     local nodes_dir="$1" role="$2" index="$3" host="$4" node_id directory_id="" dir listeners advertised data_dir
+    local listen_address=0.0.0.0
+    [[ "$LISTEN_ADDRESS_MODE" != node_ip ]] || listen_address="$host"
     if [[ "$role" == controller ]]; then
         node_id=$((100 + index)); directory_id="${CONTROLLER_DIRECTORY_IDS[$((index-1))]}"
     else
@@ -210,13 +213,13 @@ generate_node() {
         fi
         render_template "$(script_root)/templates/controller.properties.tmpl" "$dir/config/server.properties" \
             "NODE_ID=$node_id" "CONTROLLER_BOOTSTRAP_SERVERS=$CONTROLLER_BOOTSTRAP_SERVERS" \
-            "CONTROLLER_PORT=$CONTROLLER_PORT"
+            "CONTROLLER_PORT=$CONTROLLER_PORT" "LISTEN_ADDRESS=$listen_address"
         data_dir="$KAFKA_DATA_BASE_DIR/controller/metadata"
     else
-        listeners="INTERNAL://0.0.0.0:${BROKER_PORT}"
+        listeners="INTERNAL://${listen_address}:${BROKER_PORT}"
         advertised="INTERNAL://${host}:${BROKER_PORT}"
         if [[ "$ENABLE_EXTERNAL_LISTENER" == true || "$ENABLE_AUTH" == true ]]; then
-            listeners+=",EXTERNAL://0.0.0.0:${EXTERNAL_PORT}"
+            listeners+=",EXTERNAL://${listen_address}:${EXTERNAL_PORT}"
             advertised+=",EXTERNAL://${host}:${EXTERNAL_PORT}"
         fi
         local external_protocol=PLAINTEXT auth_config=""
@@ -282,6 +285,9 @@ write_generated_readme() {
 本文为通用操作说明，不记录具体集群身份、主机地址或工作站路径。
 实际拓扑与身份见同目录 manifest.json、topology.csv；节点镜像、部署路径及数据目录见各角色包的 .env。
 管理机默认输出到仓库的 kafka/cluster/，后续分发使用该目录。
+
+监听地址见各节点 config/server.properties 的 listeners。固定 IP 模式下，
+消息验证命令中的 127.0.0.1 需替换为当前 broker 绑定的节点 IP。
 
 ## 操作顺序
 

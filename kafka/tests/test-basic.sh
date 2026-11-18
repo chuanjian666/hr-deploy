@@ -29,6 +29,85 @@ export KAFKA_CONFIG_FILE="$TMP/kafka-admin.conf"
 export KAFKA_CLUSTER_DIR="$TMP/cluster"
 export KAFKA_INTERACTIVE=false
 
+# Verify binding modes with separate controller and broker addresses, including
+# old configs, external listeners, authentication, and stable cluster identities.
+(
+    export KAFKA_CONFIG_FILE="$TMP/listen.conf"
+    export KAFKA_CLUSTER_DIR="$TMP/listen-cluster"
+    cp "$ROOT/config/kafka-admin.conf.example" "$KAFKA_CONFIG_FILE"
+    "$ROOT/kafka-admin.sh" config set CONTROLLER_HOSTS '10.20.0.11,10.20.0.12,10.20.0.13' >/dev/null
+    "$ROOT/kafka-admin.sh" config set BROKER_HOSTS '10.20.1.11,10.20.1.12,10.20.1.13' >/dev/null
+    for mode in all node_ip; do
+        "$ROOT/kafka-admin.sh" config set LISTEN_ADDRESS_MODE "$mode" >/dev/null
+        for access in internal external auth; do
+            "$ROOT/kafka-admin.sh" config set ENABLE_EXTERNAL_LISTENER false >/dev/null
+            "$ROOT/kafka-admin.sh" config set ENABLE_AUTH false >/dev/null
+            case "$access" in
+                external) "$ROOT/kafka-admin.sh" config set ENABLE_EXTERNAL_LISTENER true >/dev/null ;;
+                auth)
+                    "$ROOT/kafka-admin.sh" config set ENABLE_AUTH true >/dev/null
+                    "$ROOT/kafka-admin.sh" config set AUTH_PASSWORD Listen-Test-Password >/dev/null
+                    ;;
+            esac
+            "$ROOT/kafka-admin.sh" cluster init >/dev/null
+            "$ROOT/kafka-admin.sh" cluster validate >/dev/null
+            python3 - "$KAFKA_CLUSTER_DIR" "$mode" "$access" <<'PY'
+import json, pathlib, sys
+root, mode, access = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+manifest = json.loads((root / 'manifest.json').read_text())
+identity = [manifest['cluster']['id'], [n['directoryId'] for n in manifest['controllers']]]
+saved = root.parent / 'listen-identity.json'
+if saved.exists():
+    assert json.loads(saved.read_text()) == identity
+else:
+    saved.write_text(json.dumps(identity))
+quorum = ','.join(f'10.20.0.{i}:9093' for i in (11, 12, 13))
+for role in ('controller', 'broker'):
+    for node in manifest[role + 's']:
+        host, index = node['host'], node['index']
+        props = dict(line.split('=', 1) for line in
+                     (root / 'nodes' / f'{role}-{index}-{host}' / 'config/server.properties').read_text().splitlines()
+                     if '=' in line)
+        bind = host if mode == 'node_ip' else '0.0.0.0'
+        assert props['controller.quorum.bootstrap.servers'] == quorum
+        if role == 'controller':
+            assert props['listeners'] == f'CONTROLLER://{bind}:9093'
+        else:
+            extra = f',EXTERNAL://{bind}:19092' if access != 'internal' else ''
+            advertised_extra = f',EXTERNAL://{host}:19092' if access != 'internal' else ''
+            assert props['listeners'] == f'INTERNAL://{bind}:9092' + extra
+            assert props['advertised.listeners'] == f'INTERNAL://{host}:9092' + advertised_extra
+            assert props['inter.broker.listener.name'] == 'INTERNAL'
+            protocol = 'SASL_PLAINTEXT' if access == 'auth' else 'PLAINTEXT'
+            assert f'EXTERNAL:{protocol}' in props['listener.security.protocol.map']
+PY
+        done
+    done
+    "$ROOT/kafka-admin.sh" config set LISTEN_ADDRESS_MODE invalid >/dev/null
+    if "$ROOT/kafka-admin.sh" config validate >"$TMP/listen-error.log" 2>&1; then
+        echo 'invalid listen mode accepted' >&2; exit 1
+    fi
+    grep -q 'LISTEN_ADDRESS_MODE 必须是' "$TMP/listen-error.log"
+    "$ROOT/kafka-admin.sh" config set LISTEN_ADDRESS_MODE node_ip >/dev/null
+    for key in CONTROLLER_HOSTS BROKER_HOSTS; do
+        for bad_host in node-1 0.0.0.0 999.1.1.1; do
+            "$ROOT/kafka-admin.sh" config set "$key" "$bad_host,10.20.2.12,10.20.2.13" >/dev/null
+            if "$ROOT/kafka-admin.sh" config validate >/dev/null 2>&1; then
+                echo 'invalid fixed IP accepted' >&2; exit 1
+            fi
+        done
+        "$ROOT/kafka-admin.sh" config set "$key" '10.20.0.11,10.20.0.12,10.20.0.13' >/dev/null
+    done
+    # Existing hostname configurations still work when the new option is absent.
+    sed '/^LISTEN_ADDRESS_MODE=/d' "$KAFKA_CONFIG_FILE" > "$TMP/legacy-listen.conf"
+    export KAFKA_CONFIG_FILE="$TMP/legacy-listen.conf"
+    "$ROOT/kafka-admin.sh" config set CONTROLLER_HOSTS 'controller-1,controller-2,controller-3' >/dev/null
+    "$ROOT/kafka-admin.sh" config set BROKER_HOSTS 'broker-1,broker-2,broker-3' >/dev/null
+    "$ROOT/kafka-admin.sh" cluster init >/dev/null
+    grep -q '^listeners=CONTROLLER://0.0.0.0:9093$' "$KAFKA_CLUSTER_DIR/nodes/controller-1-controller-1/config/server.properties"
+    grep -q '^listeners=INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092$' "$KAFKA_CLUSTER_DIR/nodes/broker-1-broker-1/config/server.properties"
+)
+
 "$ROOT/kafka-admin.sh" config validate >/dev/null
 "$ROOT/kafka-admin.sh" cluster init >/dev/null
 "$ROOT/kafka-admin.sh" cluster validate >/dev/null

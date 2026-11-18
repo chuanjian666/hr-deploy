@@ -6,6 +6,8 @@
 
 第 1–6 节用于已开启认证的集群。初始化时未开启认证的集群直接执行第 7 节。
 
+下文的 `127.0.0.1` 入口适用于默认 `LISTEN_ADDRESS_MODE=all`。若选择 `node_ip`，执行前将所有命令中的 `127.0.0.1` 替换为当前 broker 在 `BROKER_HOSTS` 中配置的固定 IP，端口保持实际配置值；集群返回的三个 broker 地址也必须可达。
+
 通过条件：
 
 - 三个 broker 均已注册，controller quorum 和复制正常。

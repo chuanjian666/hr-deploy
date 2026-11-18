@@ -82,6 +82,17 @@ validate_cluster_config() {
     esac
     parse_hosts CONTROLLER_HOSTS "$CONTROLLER_HOSTS"; local controllers=("${PARSED_HOSTS[@]}")
     parse_hosts BROKER_HOSTS "$BROKER_HOSTS"; local brokers=("${PARSED_HOSTS[@]}")
+    case "$LISTEN_ADDRESS_MODE" in
+        all) ;;
+        node_ip)
+            local host
+            for host in "${controllers[@]}" "${brokers[@]}"; do
+                [[ "$host" =~ ^[0-9]+(\.[0-9]+){3}$ && "$host" != 0.0.0.0 ]] || \
+                    die "LISTEN_ADDRESS_MODE=node_ip 时 CONTROLLER_HOSTS 和 BROKER_HOSTS 必须填写非 0.0.0.0 的固定 IPv4: $host"
+            done
+            ;;
+        *) die "LISTEN_ADDRESS_MODE 必须是 all 或 node_ip" ;;
+    esac
     validate_port CONTROLLER_PORT "$CONTROLLER_PORT"
     validate_port BROKER_PORT "$BROKER_PORT"
     validate_boolean ENABLE_EXTERNAL_LISTENER "$ENABLE_EXTERNAL_LISTENER"

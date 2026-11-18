@@ -31,6 +31,23 @@ cd /root/hr-deploy/kafka
 
 按提示输入集群名称、镜像、部署规格、三个 controller 和三个 broker 的地址、Kafka 数据基础目录及认证设置。地址顺序决定节点编号。首次运行会自动创建 `config/kafka-admin.conf`，再次运行时可沿用括号内的值，manual 资源项需要显式输入。三种规格的节点包都生成到 `cluster/nodes/`。
 
+初始化时可选择监听地址模式 `LISTEN_ADDRESS_MODE`：
+
+- `all`（默认）：controller、broker INTERNAL 和启用的 EXTERNAL 端口监听 `0.0.0.0`。旧配置缺少此项时也沿用该模式。
+- `node_ip`：controller 绑定 `CONTROLLER_HOSTS` 中对应的 IP，broker 的 INTERNAL 和启用的 EXTERNAL 端口绑定 `BROKER_HOSTS` 中对应的 IP。两组地址必须填写固定 IPv4，且必须是对应宿主机实际持有的地址，不能填写主机名或 NAT 公网映射地址。
+
+也可在管理机非交互设置并重新生成节点包：
+
+```bash
+./kafka-admin.sh config set LISTEN_ADDRESS_MODE node_ip
+KAFKA_INTERACTIVE=false ./kafka-admin.sh cluster init
+./kafka-admin.sh cluster validate
+```
+
+恢复监听所有 IPv4 地址时，将 `node_ip` 改为 `all`。该选项只改变监听地址，broker 的 `advertised.listeners` 和 controller 连接地址仍使用已配置的节点地址。固定 IP 模式下，通过 `127.0.0.1` 或其他网卡 IP 连接会失败，验证命令需改用绑定的节点 IP；客户端和集群节点必须能访问该地址。内部端口仍需通过防火墙限制访问来源。
+
+已有集群修改此选项后，保留原管理配置与 `cluster/manifest.json`，重新生成、分发对应节点包，再逐节点滚动重启并检查健康状态。生成文件不会自动修改运行中的服务，也不需要重新格式化数据目录。
+
 初始化时可选择 `ENABLE_AUTH=true`，确认初始账号和客户端端口（默认 19092）。首次密码留空会自动生成 6 位随机密码并保存到管理机配置及 `cluster/clients/admin.properties`，不在终端显示；手动指定密码不限制长度。重复初始化沿用配置中的密码，不自动轮换。开启后所有业务客户端使用 `SASL_PLAINTEXT + SCRAM-SHA-512` 连接该端口；9092/9093 仅允许集群节点互访。管理机需要 Python 3，无需第三方 Python 包；目标节点不需要 Python。
 
 初始凭据仅在 controller 首次格式化时写入。独立生产者/消费者账号可在集群启动后动态创建。配置、账号管理及已有集群切换步骤见 [账号认证说明](docs/authentication.md)。

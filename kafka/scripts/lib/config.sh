@@ -17,6 +17,8 @@ ensure_config() {
 
 load_config() {
     ensure_config
+    # 兼容尚未包含监听选项的旧配置。
+    LISTEN_ADDRESS_MODE=all
     # 配置文件是本工具管理的受信任 Bash 文件。
     # shellcheck disable=SC1090
     source "$KAFKA_CONFIG_FILE"
